@@ -1,0 +1,805 @@
+
+import React, { useState, useEffect } from 'react';
+import { parseNumber } from '../utils';
+import { 
+  Building2, 
+  Save, 
+  Download, 
+  Upload, 
+  Image as ImageIcon, 
+  Trash2, 
+  Database, 
+  AlertTriangle, 
+  Loader2,
+  TrendingUp,
+  Wallet,
+  User,
+  Lock,
+  UserPlus,
+  Fingerprint,
+  Share2,
+  Cloud,
+  Sparkles,
+  Brain,
+  Key
+} from 'lucide-react';
+import { CompanyInfo, AppSettings, User as UserType } from '../types';
+import { dbService } from '../db';
+
+import { jsPDF } from 'jspdf';
+import { TECHNICAL_DESCRIPTION, PROMOTIONAL_DESCRIPTION } from '../constants/documentation';
+
+interface Props {
+  company: CompanyInfo;
+  setCompany: React.Dispatch<React.SetStateAction<CompanyInfo>>;
+  settings: AppSettings;
+  setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
+  user: UserType;
+}
+
+const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings, user }) => {
+  const [isResetting, setIsResetting] = useState(false);
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [isPreparingBackup, setIsPreparingBackup] = useState(false);
+  const [preparedBackup, setPreparedBackup] = useState<{ data: string, fileName: string } | null>(null);
+  const [passwordForm, setPasswordForm] = useState({ current: '', new: '', confirm: '' });
+  const [systemStatus, setSystemStatus] = useState({
+    biometrics: 'checking',
+    share: 'checking',
+    secure: window.isSecureContext
+  });
+
+  const downloadPDF = (title: string, content: string, filename: string) => {
+    const doc = new jsPDF();
+    const splitText = doc.splitTextToSize(content, 180);
+    
+    doc.setFontSize(20);
+    doc.text(title, 10, 20);
+    
+    doc.setFontSize(10);
+    doc.text(splitText, 10, 35);
+    
+    doc.save(filename);
+  };
+
+  useEffect(() => {
+    const checkCapabilities = async () => {
+      const status = { ...systemStatus };
+      
+      // Check Biometrics
+      if (!window.isSecureContext) {
+        status.biometrics = 'no-https';
+      } else if (!navigator.credentials) {
+        status.biometrics = 'not-supported';
+      } else {
+        try {
+          // We can't easily check permission without triggering a prompt in some browsers
+          // but we can check if the API exists
+          status.biometrics = 'available';
+        } catch {
+          status.biometrics = 'blocked';
+        }
+      }
+
+      // Check Share
+      if (!navigator.share) {
+        status.share = 'not-supported';
+      } else if (!window.isSecureContext) {
+        status.share = 'no-https';
+      } else {
+        status.share = 'available';
+      }
+
+      setSystemStatus(status);
+    };
+
+    checkCapabilities();
+  }, []);
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordSuccess, setPasswordSuccess] = useState('');
+
+  const saveSettings = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    
+    // Guardar datos de empresa incluyendo nuevos campos
+    const newCompany: CompanyInfo = { 
+      ...company, 
+      name: formData.get('name') as string, 
+      slogan: formData.get('slogan') as string,
+      rif: formData.get('rif') as string,
+      phone: formData.get('phone') as string,
+      email: formData.get('email') as string,
+      address: formData.get('address') as string,
+      bank: formData.get('bank') as string,
+      dni: formData.get('dni') as string,
+      mobilePhone: formData.get('mobilePhone') as string,
+      accountNumber: formData.get('accountNumber') as string,
+    };
+    
+    // Guardar tasa de cambio y llave de Gemini
+    const newSettings: AppSettings = {
+      ...settings,
+      exchangeRate: parseNumber(formData.get('exchangeRate') as string) || settings.exchangeRate,
+      aiProvider: formData.get('aiProvider') as 'gemini' | 'deepseek' | 'openai',
+      geminiApiKey: formData.get('geminiApiKey') as string,
+      geminiModel: formData.get('geminiModel') as string,
+      deepseekApiKey: formData.get('deepseekApiKey') as string,
+      deepseekModel: formData.get('deepseekModel') as string,
+      openaiApiKey: formData.get('openaiApiKey') as string,
+      openaiModel: formData.get('openaiModel') as string
+    };
+
+    setCompany(newCompany);
+    setSettings(newSettings);
+    
+    try {
+      await dbService.put('settings', { ...newCompany, id: 'company_info' });
+      await dbService.put('settings', { ...newSettings, id: 'app_settings' });
+      alert('Configuración guardada correctamente.');
+    } catch (err: any) {
+      if (err.message !== "SESSION_EXPIRED") {
+        alert('Configuración guardada localmente. Error al sincronizar con el servidor.');
+      }
+    }
+  };
+
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result as string;
+        const newCompany = { ...company, logo: base64 };
+        setCompany(newCompany);
+        await dbService.put('settings', { ...newCompany, id: 'company_info' });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      const backup = await dbService.exportBackup();
+      const blob = new Blob([backup], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Respaldo_${new Date().toISOString().split('T')[0]}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Error al exportar.");
+    }
+  };
+
+  const handleShareCloud = async () => {
+    // Si ya tenemos un respaldo preparado, lo compartimos directamente (gesto de usuario preservado)
+    if (preparedBackup) {
+      try {
+        if (navigator.share && window.isSecureContext) {
+          const file = new File([preparedBackup.data], preparedBackup.fileName, { type: 'application/json' });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({
+              files: [file],
+              title: 'Respaldo Gestor Pro',
+              text: 'Copia de seguridad de la base de datos'
+            });
+            setPreparedBackup(null);
+            return;
+          }
+        }
+      } catch (err: any) {
+        // Silenciamos errores esperados en el editor
+        const isPermissionError = err.name === 'NotAllowedError' || err.name === 'SecurityError' || err.message?.includes('permission');
+        if (isPermissionError) {
+           console.warn("Compartir bloqueado por el navegador/editor, usando descarga.");
+        } else if (err.name !== 'AbortError') {
+           console.error("Error al compartir:", err);
+        }
+      }
+      
+      // Fallback: Descarga tradicional
+      const blob = new Blob([preparedBackup.data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = preparedBackup.fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+      setPreparedBackup(null);
+      
+      // Mensaje amigable dependiendo del contexto
+      if (!window.isSecureContext || !navigator.share) {
+        alert("Respaldo descargado. Súbelo manualmente a la nube.");
+      } else {
+        alert("Debido a restricciones de seguridad del editor, el archivo se ha descargado directamente. Súbelo manualmente a Drive.\n\n(En tu instalación final por Termux, el menú de compartir se abrirá normalmente).");
+      }
+      return;
+    }
+
+    // Si no hay respaldo preparado, lo generamos
+    try {
+      setIsPreparingBackup(true);
+      const backup = await dbService.exportBackup();
+      const fileName = `Respaldo_${new Date().toISOString().split('T')[0]}.json`;
+      
+      // Guardamos el respaldo preparado para el segundo clic (gesto de usuario)
+      setPreparedBackup({ data: backup, fileName });
+      setIsPreparingBackup(false);
+      
+      // Intentamos compartir de una vez por si el navegador lo permite (algunos permiten un pequeño delay)
+      try {
+        if (navigator.share && window.isSecureContext) {
+          const file = new File([backup], fileName, { type: 'application/json' });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({
+              files: [file],
+              title: 'Respaldo Gestor Pro',
+              text: 'Copia de seguridad de la base de datos'
+            });
+            setPreparedBackup(null);
+          }
+        }
+      } catch (e) {
+        // Ignoramos el error del primer intento, el usuario verá el botón de "Compartir Ahora"
+        console.log("Primer intento de share falló (gesto de usuario), esperando segundo clic.");
+      }
+    } catch (err) {
+      console.error("Error al preparar respaldo:", err);
+      alert("No se pudo generar el respaldo.");
+      setIsPreparingBackup(false);
+    }
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!confirm("Se sobrescribirán los datos. ¿Continuar?")) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const json = event.target?.result as string;
+        await dbService.importBackup(json);
+        alert("Restauración completa.");
+        window.location.reload();
+      } catch (err) {
+        alert("Archivo inválido.");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleRegisterBiometric = async () => {
+    if (!window.isSecureContext || !navigator.credentials) {
+      alert("⚠️ SEGURIDAD: El acceso biométrico requiere una conexión segura (HTTPS).\n\nSi estás usando Termux o AWebServer localmente, esta función solo se activará si accedes mediante 'localhost' o configuras un certificado SSL.");
+      return;
+    }
+
+    try {
+      alert("Iniciando registro de huella... Sigue las instrucciones de tu dispositivo.");
+      
+      const challenge = new Uint8Array(32);
+      window.crypto.getRandomValues(challenge);
+      
+      const credential = await navigator.credentials.create({
+        publicKey: {
+          challenge,
+          rp: { name: "Gestor Pro" },
+          user: {
+            id: new TextEncoder().encode(user.id),
+            name: user.username,
+            displayName: user.name
+          },
+          pubKeyCredParams: [{ alg: -7, type: "public-key" }],
+          authenticatorSelection: { userVerification: "required" },
+          timeout: 60000
+        }
+      });
+
+      if (credential) {
+        alert("✅ Huella registrada correctamente en este dispositivo.");
+      }
+    } catch (err: any) {
+      // Manejo silencioso en consola para evitar ruidos de error innecesarios
+      console.warn("WebAuthn Attempt:", err.name, err.message);
+      
+      if (err.name === 'SecurityError' || err.message?.toLowerCase().includes('permissions policy') || err.message?.toLowerCase().includes('not enabled')) {
+        alert("⚠️ RESTRICCIÓN DE SEGURIDAD:\n\nEl editor de previsualización bloquea el acceso a la huella por seguridad.\n\nSOLUCIÓN: Esta función se activará automáticamente cuando instales la app en tu teléfono (vía Termux o AWebServer) y accedas por 'localhost'.");
+      } else if (err.name === 'NotAllowedError') {
+        alert("Operación cancelada o tiempo de espera agotado.");
+      } else if (err.name === 'NotSupportedError') {
+        alert("Tu dispositivo o navegador no soporta autenticación biométrica WebAuthn.");
+      } else {
+        alert("Error al configurar huella: " + err.message);
+      }
+    }
+  };
+
+  const handleReset = async () => {
+    console.log("🔘 Botón de reset presionado");
+    if (!confirm("¡ADVERTENCIA!\n\nSe eliminarán todos los registros.\n\n¿Desea continuar?")) {
+      console.log("❌ Reset cancelado por el usuario (confirm)");
+      return;
+    }
+    const check = prompt("Escriba ELIMINAR para confirmar:");
+    if (check !== "ELIMINAR") {
+      console.log("❌ Reset cancelado: palabra de confirmación incorrecta");
+      return;
+    }
+
+    try {
+      console.log("🚀 Iniciando proceso de reset...");
+      setIsResetting(true);
+      await dbService.clearAllData();
+      console.log("🧹 Limpiando almacenamiento local...");
+      localStorage.clear();
+      sessionStorage.clear();
+      console.log("🔄 Reiniciando aplicación...");
+      setTimeout(() => {
+        window.location.replace(window.location.origin);
+      }, 1000);
+    } catch (error) {
+      console.error("❌ Error durante el reset:", error);
+      alert("Error al limpiar datos.");
+      setIsResetting(false);
+    }
+  };
+
+  const handleChangePassword = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setPasswordError('');
+    setPasswordSuccess('');
+
+    if (!passwordForm.current || !passwordForm.new || !passwordForm.confirm) {
+      setPasswordError('Todos los campos de contraseña son requeridos');
+      return;
+    }
+
+    if (passwordForm.new !== passwordForm.confirm) {
+      setPasswordError('Las contraseñas nuevas no coinciden');
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      const response = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({
+          currentPassword: passwordForm.current,
+          newPassword: passwordForm.new
+        })
+      });
+
+      const contentType = response.headers.get("content-type");
+      if (contentType && contentType.indexOf("application/json") !== -1) {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Error al cambiar contraseña');
+        setPasswordSuccess('Contraseña actualizada correctamente');
+        setPasswordForm({ current: '', new: '', confirm: '' });
+      } else {
+        const text = await response.text();
+        console.error("Respuesta no JSON del servidor:", text);
+        throw new Error(`Error del servidor (${response.status}). Intente de nuevo más tarde.`);
+      }
+    } catch (err: any) {
+      setPasswordError(err.message);
+    } finally {
+      setIsChangingPassword(false);
+    }
+  };
+
+  return (
+    <div className="animate-in fade-in duration-500 pb-12">
+      {isResetting && (
+        <div className="fixed inset-0 bg-slate-950/98 backdrop-blur-3xl z-[9999] flex flex-col items-center justify-center text-white text-center">
+           <Loader2 size={64} className="text-orange-500 animate-spin mb-6" />
+           <h2 className="text-3xl font-black uppercase tracking-[0.4em] mb-4">Limpiando Sistema</h2>
+        </div>
+      )}
+
+      <form onSubmit={saveSettings} className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="space-y-4">
+          {/* Datos de Empresa */}
+          <section className="bg-[#1e293b] p-6 rounded-[2.5rem] border border-slate-700 shadow-xl space-y-5">
+            <h2 className="text-xs font-black uppercase tracking-widest text-orange-500 flex items-center gap-2">
+              <Building2 size={16} /> Perfil Jurídico y Fiscal
+            </h2>
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Nombre Comercial</label>
+                <input name="name" defaultValue={company.name} className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none focus:border-orange-500/50" required />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Eslogan / Lema</label>
+                <input name="slogan" defaultValue={company.slogan} placeholder="Ej: Calidad al mejor precio" className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none italic text-slate-300" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[8px] font-black text-slate-500 uppercase ml-2">RIF</label>
+                  <input name="rif" defaultValue={company.rif} className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none" required />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Teléfono</label>
+                  <input name="phone" defaultValue={company.phone} className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none" />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Dirección</label>
+                <input name="address" defaultValue={company.address} className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Email</label>
+                <input name="email" type="email" defaultValue={company.email} className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none" />
+              </div>
+            </div>
+          </section>
+
+          {/* Información de Pago Móvil */}
+          <section className="bg-[#1e293b] p-6 rounded-[2.5rem] border border-slate-700 shadow-xl space-y-5">
+            <h2 className="text-xs font-black uppercase tracking-widest text-indigo-400 flex items-center gap-2">
+              <Wallet size={16} /> Información de Pago Móvil
+            </h2>
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Banco</label>
+                <input name="bank" defaultValue={company.bank} placeholder="Ej: Banco de Venezuela" className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none focus:border-indigo-500/50" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Cédula de Identidad</label>
+                  <input name="dni" defaultValue={company.dni} placeholder="V-00.000.000" className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Número de Celular</label>
+                  <input name="mobilePhone" defaultValue={company.mobilePhone} placeholder="0412-0000000" className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none" />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Número de Cuenta Bancaria (20 dígitos)</label>
+                <input 
+                  name="accountNumber" 
+                  defaultValue={company.accountNumber} 
+                  maxLength={24}
+                  placeholder="0102-0000-00-0000000000" 
+                  className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none focus:border-indigo-500/50 font-mono tracking-wider" 
+                />
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div className="space-y-4">
+           {/* Logo Section */}
+            <section className="bg-[#1e293b] p-6 rounded-[2.5rem] border border-slate-700 shadow-xl flex flex-col items-center justify-center gap-5 text-center">
+              <h2 className="text-xs font-black uppercase tracking-widest text-indigo-400">Logotipo</h2>
+              <div className="w-36 h-36 bg-slate-900 rounded-[2.5rem] flex items-center justify-center overflow-hidden relative border-2 border-dashed border-slate-700 group shadow-inner">
+                 {company.logo ? <img src={company.logo} className="w-full h-full object-contain p-2" alt="Logo" /> : <ImageIcon className="text-slate-700" size={40} />}
+                 <label className="absolute inset-0 bg-black/80 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center cursor-pointer transition-all duration-300 backdrop-blur-sm">
+                    <Upload size={24} className="text-white mb-1" />
+                    <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+                 </label>
+              </div>
+              
+              {/* Configuración de Moneda integrada en el panel lateral */}
+              <div className="w-full space-y-1 text-left px-2">
+                 <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Tasa de Cambio Manual (Bs/$)</label>
+                 <div className="relative">
+                   <input 
+                     name="exchangeRate" 
+                     type="number" 
+                     step="0.01" 
+                     lang="en-US"
+                     defaultValue={settings.exchangeRate} 
+                     className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-2xl font-black text-orange-500 outline-none focus:border-orange-500/50" 
+                   />
+                   <TrendingUp className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-700" size={20} />
+                 </div>
+              </div>
+
+              <button type="submit" className="w-full bg-orange-500 hover:bg-orange-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-3 shadow-xl transition-all text-xs uppercase tracking-widest mt-2">
+                 <Save size={18} /> GUARDAR CAMBIOS
+              </button>
+            </section>
+
+            {/* Inteligencia Artificial (Gemini & DeepSeek) */}
+            <section className="bg-[#1e293b] p-6 rounded-[2.5rem] border border-slate-700 shadow-xl space-y-5">
+              <h2 className="text-xs font-black uppercase tracking-widest text-amber-400 flex items-center gap-2">
+                <Sparkles size={16} /> Inteligencia Artificial
+              </h2>
+              
+              <div className="space-y-6">
+                <p className="text-[9px] font-bold text-slate-400 uppercase leading-relaxed tracking-tight">
+                  CONFIGURA TU PROPIA LLAVE DE API PARA QUE EL ANÁLISIS INTELIGENTE FUNCIONE FUERA DE AI STUDIO.
+                </p>
+
+                <div className="space-y-2">
+                  <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Proveedor de IA Activo</label>
+                  <select 
+                    name="aiProvider" 
+                    defaultValue={settings.aiProvider || "gemini"}
+                    className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none focus:border-amber-500/50 text-white"
+                  >
+                    <option value="gemini">Google Gemini</option>
+                    <option value="deepseek">DeepSeek AI</option>
+                    <option value="openai">OpenAI (ChatGPT)</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Gemini Config */}
+                  <div className="p-4 bg-slate-900/50 rounded-2xl border border-slate-700/50 space-y-4">
+                    <h3 className="text-[10px] font-black text-blue-400 uppercase flex items-center gap-2">
+                      <Brain size={14} /> Google Gemini
+                    </h3>
+                    <div className="space-y-1">
+                      <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Gemini API Key</label>
+                      <input 
+                        name="geminiApiKey" 
+                        type="password"
+                        defaultValue={settings.geminiApiKey} 
+                        placeholder="Pega tu llave aquí..."
+                        className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-3 text-xs font-bold outline-none focus:border-blue-500/50" 
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Modelo</label>
+                      <select 
+                        name="geminiModel" 
+                        defaultValue={settings.geminiModel || "gemini-3-flash-preview"}
+                        className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-3 text-xs font-bold outline-none focus:border-blue-500/50 text-white"
+                      >
+                        <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
+                        <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro</option>
+                        <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* DeepSeek Config */}
+                  <div className="p-4 bg-slate-900/50 rounded-2xl border border-slate-700/50 space-y-4">
+                    <h3 className="text-[10px] font-black text-slate-200 uppercase flex items-center gap-2">
+                      <Brain size={14} /> DeepSeek AI
+                    </h3>
+                    <div className="space-y-1">
+                      <label className="text-[8px] font-black text-slate-500 uppercase ml-2">DeepSeek API Key</label>
+                      <input 
+                        name="deepseekApiKey" 
+                        type="password"
+                        defaultValue={settings.deepseekApiKey} 
+                        placeholder="sk-..."
+                        className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-3 text-xs font-bold outline-none focus:border-slate-400/50" 
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Modelo</label>
+                      <select 
+                        name="deepseekModel" 
+                        defaultValue={settings.deepseekModel || "deepseek-chat"}
+                        className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-3 text-xs font-bold outline-none focus:border-slate-400/50 text-white"
+                      >
+                        <option value="deepseek-chat">DeepSeek Chat (V3)</option>
+                        <option value="deepseek-reasoner">DeepSeek Reasoner (R1)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* OpenAI Config */}
+                  <div className="p-4 bg-slate-900/50 rounded-2xl border border-slate-700/50 space-y-4">
+                    <h3 className="text-[10px] font-black text-emerald-400 uppercase flex items-center gap-2">
+                      <Brain size={14} /> OpenAI
+                    </h3>
+                    <div className="space-y-1">
+                      <label className="text-[8px] font-black text-slate-500 uppercase ml-2">OpenAI API Key</label>
+                      <input 
+                        name="openaiApiKey" 
+                        type="password"
+                        defaultValue={settings.openaiApiKey} 
+                        placeholder="sk-..."
+                        className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-3 text-xs font-bold outline-none focus:border-emerald-500/50" 
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Modelo</label>
+                      <select 
+                        name="openaiModel" 
+                        defaultValue={settings.openaiModel || "gpt-4o-mini"}
+                        className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-3 text-xs font-bold outline-none focus:border-emerald-500/50 text-white"
+                      >
+                        <option value="gpt-4o-mini">GPT-4o Mini (Recomendado)</option>
+                        <option value="gpt-4o">GPT-4o (Potente)</option>
+                        <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <a 
+                    href="https://aistudio.google.com/app/apikey" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-[8px] font-black text-blue-500 hover:text-blue-400 uppercase tracking-widest underline"
+                  >
+                    Obtener Gemini Key Gratis
+                  </a>
+                  <a 
+                    href="https://platform.deepseek.com/" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-[8px] font-black text-slate-400 hover:text-slate-300 uppercase tracking-widest underline"
+                  >
+                    Obtener DeepSeek Key
+                  </a>
+                  <a 
+                    href="https://platform.openai.com/api-keys" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-[8px] font-black text-emerald-500 hover:text-emerald-400 uppercase tracking-widest underline"
+                  >
+                    Obtener OpenAI Key
+                  </a>
+                </div>
+              </div>
+            </section>
+
+            {/* Gestión de Usuario / Perfil */}
+            <section className="bg-[#1e293b] p-6 rounded-[2.5rem] border border-slate-700 shadow-xl space-y-5">
+              <h2 className="text-xs font-black uppercase tracking-widest text-orange-500 flex items-center gap-2">
+                <User size={16} /> Mi Perfil de Acceso
+              </h2>
+              <div className="space-y-4">
+                <div className="flex items-center gap-4 p-4 bg-slate-900 rounded-2xl border border-slate-700">
+                  <div className="w-12 h-12 bg-orange-500 rounded-xl flex items-center justify-center text-white font-black text-lg uppercase">
+                    {user.name.slice(0, 2)}
+                  </div>
+                  <div>
+                    <p className="text-xs font-black text-white uppercase tracking-tighter">{user.name}</p>
+                    <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Usuario: {user.username} | Rol: {user.role}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3 pt-2">
+                  <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-2">Cambiar Contraseña</p>
+                  
+                  {passwordError && <p className="text-[9px] font-bold text-rose-500 uppercase tracking-widest ml-2">{passwordError}</p>}
+                  {passwordSuccess && <p className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest ml-2">{passwordSuccess}</p>}
+
+                  <div className="space-y-1">
+                    <input 
+                      type="password" 
+                      placeholder="Contraseña Actual" 
+                      className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none focus:border-orange-500/50"
+                      value={passwordForm.current}
+                      onChange={(e) => setPasswordForm({ ...passwordForm, current: e.target.value })}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <input 
+                      type="password" 
+                      placeholder="Nueva Contraseña" 
+                      className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none focus:border-orange-500/50"
+                      value={passwordForm.new}
+                      onChange={(e) => setPasswordForm({ ...passwordForm, new: e.target.value })}
+                    />
+                    <input 
+                      type="password" 
+                      placeholder="Confirmar Nueva" 
+                      className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-xs font-bold outline-none focus:border-orange-500/50"
+                      value={passwordForm.confirm}
+                      onChange={(e) => setPasswordForm({ ...passwordForm, confirm: e.target.value })}
+                    />
+                  </div>
+                  <button 
+                    type="button" 
+                    onClick={() => handleChangePassword()}
+                    disabled={isChangingPassword}
+                    className="w-full bg-slate-800 hover:bg-slate-700 text-white font-black py-3 rounded-xl flex items-center justify-center gap-2 transition-all text-[9px] uppercase tracking-widest"
+                  >
+                    {isChangingPassword ? <Loader2 size={14} className="animate-spin" /> : <Lock size={14} />}
+                    ACTUALIZAR CONTRASEÑA
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            {/* Biometric Access Info */}
+            <section className="bg-[#1e293b] p-6 rounded-[2.5rem] border border-slate-700 shadow-xl space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xs font-black uppercase tracking-widest text-indigo-400 flex items-center gap-2">
+                  <Fingerprint size={16} /> Acceso Biométrico
+                </h2>
+                <div className={`px-2 py-1 rounded-md text-[8px] font-bold uppercase tracking-tighter ${
+                  systemStatus.biometrics === 'available' ? 'bg-emerald-500/20 text-emerald-400' : 
+                  systemStatus.biometrics === 'no-https' ? 'bg-orange-500/20 text-orange-400' : 'bg-rose-500/20 text-rose-400'
+                }`}>
+                  {systemStatus.biometrics === 'available' ? 'Disponible' : 
+                   systemStatus.biometrics === 'no-https' ? 'Requiere HTTPS' : 'No Disponible'}
+                </div>
+              </div>
+              <div className="p-4 bg-indigo-500/5 border border-indigo-500/20 rounded-2xl">
+                <p className="text-[10px] font-bold text-slate-400 uppercase leading-relaxed tracking-tight">
+                  EL ACCESO POR HUELLA (WEBAUTHN) REQUIERE UNA CONEXIÓN SEGURA (HTTPS) O LOCALHOST. 
+                  ESTA FUNCIÓN ESTÁ DISEÑADA PARA TU INSTALACIÓN FINAL EN ANDROID.
+                </p>
+                <button 
+                  type="button"
+                  onClick={handleRegisterBiometric}
+                  className="mt-4 w-full bg-indigo-500/10 hover:bg-indigo-500 text-indigo-500 hover:text-white border border-indigo-500/30 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+                >
+                  {systemStatus.biometrics === 'available' ? 'CONFIGURAR HUELLA' : 'PROBAR COMPATIBILIDAD'}
+                </button>
+              </div>
+            </section>
+
+            {/* Documentation Section */}
+            <section className="bg-[#1e293b] p-6 rounded-[2.5rem] border border-slate-700 shadow-xl space-y-5">
+              <h2 className="text-xs font-black uppercase tracking-widest text-blue-400 flex items-center gap-2">
+                <Cloud size={16} /> Documentación del Sistema
+              </h2>
+              <p className="text-[9px] font-bold text-slate-400 uppercase leading-relaxed tracking-tight">
+                DESCARGA LAS DESCRIPCIONES OFICIALES DE LA APLICACIÓN PARA USO TÉCNICO O COMERCIAL.
+              </p>
+              <div className="grid grid-cols-1 gap-3">
+                <button 
+                  type="button" 
+                  onClick={() => downloadPDF('DESCRIPCIÓN TÉCNICA - GESTOR PRO', TECHNICAL_DESCRIPTION, 'GestorPro_Tecnico.pdf')}
+                  className="w-full bg-blue-600/10 hover:bg-blue-600 text-blue-500 hover:text-white border border-blue-600/30 p-4 rounded-2xl transition-all font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"
+                >
+                  <Download size={16} /> DESCARGAR DESCRIPCIÓN TÉCNICA (PDF)
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => downloadPDF('DESCRIPCIÓN PROMOCIONAL - GESTOR PRO', PROMOTIONAL_DESCRIPTION, 'GestorPro_Promocional.pdf')}
+                  className="w-full bg-indigo-600/10 hover:bg-indigo-600 text-indigo-500 hover:text-white border border-indigo-600/30 p-4 rounded-2xl transition-all font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"
+                >
+                  <Download size={16} /> DESCARGAR DESCRIPCIÓN PROMOCIONAL (PDF)
+                </button>
+              </div>
+            </section>
+
+            {/* Maintenance Section */}
+           <section className="bg-[#1e293b] p-6 rounded-[2.5rem] border border-slate-700 shadow-xl space-y-5">
+             <h2 className="text-xs font-black uppercase tracking-widest text-emerald-500 flex items-center gap-2">
+               <Database size={16} /> Mantenimiento de Datos
+             </h2>
+             <div className="grid grid-cols-2 gap-4">
+                <button type="button" onClick={handleExport} className="bg-slate-900 hover:bg-slate-800 text-slate-300 p-4 rounded-2xl border border-slate-700 flex flex-col items-center gap-2 transition-all active:scale-95 shadow-lg">
+                   <Download size={22} className="text-emerald-500" />
+                   <span className="text-[10px] font-black uppercase tracking-widest">Respaldar</span>
+                </button>
+                <button 
+                  type="button" 
+                  onClick={handleShareCloud} 
+                  disabled={isPreparingBackup}
+                  className={`p-4 rounded-2xl border flex flex-col items-center gap-2 transition-all active:scale-95 shadow-lg ${preparedBackup ? 'bg-indigo-600 border-indigo-400 text-white animate-pulse' : 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'}`}
+                >
+                   {isPreparingBackup ? <Loader2 size={22} className="text-indigo-400 animate-spin" /> : <Share2 size={22} className={preparedBackup ? 'text-white' : 'text-indigo-400'} />}
+                   <span className="text-[10px] font-black uppercase tracking-widest">
+                     {isPreparingBackup ? 'Generando...' : preparedBackup ? '¡Listo! Compartir' : 'Subir a Nube'}
+                   </span>
+                </button>
+             </div>
+             <div className="grid grid-cols-1 gap-4">
+                <label className="bg-slate-900 hover:bg-slate-800 text-slate-300 p-4 rounded-2xl border border-slate-700 flex flex-col items-center gap-2 transition-all active:scale-95 shadow-lg cursor-pointer text-center">
+                   <Upload size={22} className="text-orange-500 mx-auto" />
+                   <span className="text-[10px] font-black uppercase tracking-widest">Restaurar desde Archivo</span>
+                   <input type="file" accept=".json" className="hidden" onChange={handleImport} />
+                </label>
+             </div>
+             <button type="button" onClick={handleReset} className="w-full bg-rose-600/10 hover:bg-rose-600 text-rose-500 hover:text-white border border-rose-600/30 p-4 rounded-2xl transition-all font-black text-[10px] uppercase tracking-widest">
+                LIMPIAR TODA LA BASE DE DATOS
+             </button>
+           </section>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+export default Settings;
