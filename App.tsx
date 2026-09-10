@@ -30,7 +30,6 @@ import ExchangeRateModal from './components/ExchangeRateModal';
 import Auth from './components/Auth';
 import Manufacturing from './components/Manufacturing';
 import Promotions from './components/Promotions';
-import { PWAInstallNudge } from './components/PWAInstallNudge';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(() => {
@@ -400,8 +399,6 @@ const App: React.FC = () => {
       </main>
 
       {showExchangeModal && <ExchangeRateModal onSave={handleUpdateExchangeRate} currentRate={settings.exchangeRate} />}
-      
-      <PWAInstallNudge />
     </div>
   );
 };
