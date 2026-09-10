@@ -154,7 +154,7 @@ app.post('/api/auth/login', (req: any, res: any) => {
 
     console.log(`🎉 Login exitoso para: ${username}`);
     const permissions = user.permissions ? JSON.parse(user.permissions) : [];
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role, name: user.name, permissions }, JWT_SECRET, { expiresIn: '24h' });
+    const token = jwt.sign({ id: user.id, username: user.username, role: user.role, name: user.name, permissions }, JWT_SECRET, { expiresIn: '90d' });
     res.json({ 
       token, 
       user: { id: user.id, username: user.username, role: user.role, name: user.name, permissions } 

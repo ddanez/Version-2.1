@@ -33,12 +33,32 @@ import Promotions from './components/Promotions';
 import { PWAInstallNudge } from './components/PWAInstallNudge';
 
 const App: React.FC = () => {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(() => {
+    try {
+      const savedUser = localStorage.getItem('user_data');
+      const savedToken = localStorage.getItem('auth_token');
+      if (savedUser && savedToken) {
+        dbService.setToken(savedToken);
+        return { ...JSON.parse(savedUser), token: savedToken };
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    return null;
+  });
   const [activeTab, setActiveTab] = useState<AppTab>(() => {
     const saved = localStorage.getItem('active_tab');
     return (saved as AppTab) || AppTab.DASHBOARD;
   });
-  const [showSplash, setShowSplash] = useState(true);
+  const [showSplash, setShowSplash] = useState<boolean>(() => {
+    const savedToken = localStorage.getItem('auth_token');
+    const splashShown = sessionStorage.getItem('splash_shown');
+    if (!savedToken || splashShown) {
+      return false;
+    }
+    sessionStorage.setItem('splash_shown', 'true');
+    return true;
+  });
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [showPermissionNudge, setShowPermissionNudge] = useState(false);
   const [showExchangeModal, setShowExchangeModal] = useState(false);
@@ -215,6 +235,7 @@ const App: React.FC = () => {
         window.history.pushState(null, "", window.location.pathname);
         localStorage.setItem('last_active_time', Date.now().toString());
         console.log("App en primer plano - Restaurando estado");
+        loadData();
       }
     };
     window.document.addEventListener('visibilitychange', handleVisibilityChange);
