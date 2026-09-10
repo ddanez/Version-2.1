@@ -99,7 +99,31 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
           }
         });
 
-        const combinedCP = [...(rawCP || []), ...extraCP];
+        const dedupedCPMap = new Map<string, CustomerPromotion>();
+        [...(rawCP || []), ...extraCP].forEach((item: any) => {
+          if (!item || !item.customerId || !item.promotionId) return;
+          const key = `${item.customerId}_${item.promotionId}`;
+          const current: CustomerPromotion = {
+            id: item.id || crypto.randomUUID(),
+            customerId: item.customerId,
+            promotionId: item.promotionId,
+            currentCount: Number(item.currentCount) || 0,
+            totalRedeemed: Number(item.totalRedeemed) || 0,
+            lastUpdate: item.lastUpdate || new Date().toISOString()
+          };
+          if (!dedupedCPMap.has(key)) {
+            dedupedCPMap.set(key, current);
+          } else {
+            const existing = dedupedCPMap.get(key)!;
+            dedupedCPMap.set(key, {
+              ...existing,
+              currentCount: Math.max(existing.currentCount, current.currentCount),
+              totalRedeemed: Math.max(existing.totalRedeemed, current.totalRedeemed),
+              lastUpdate: existing.lastUpdate > current.lastUpdate ? existing.lastUpdate : current.lastUpdate
+            });
+          }
+        });
+        const combinedCP = Array.from(dedupedCPMap.values());
         setLocalPromotions(validPromos.length > 0 ? validPromos : (promotions || []));
         setLocalCustomerPromos(combinedCP.length > 0 ? combinedCP : (customerPromotions || []));
       } catch (err) {
@@ -656,12 +680,16 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
         const promoMap = new Map<string, Promotion>();
         localPromotions.forEach(p => promoMap.set(p.id, p));
 
-        // Set to track movement IDs that have already been integrated
+        // Consolidar lista de promociones y premios entregados
+        // Fuente canónica de fidelidad: customer_promotions con totalRedeemed > 0
+        const validCustomerPromos = localCustomerPromos.filter(cp => (cp.totalRedeemed || 0) > 0);
+
+        // Movimientos de tipo obsequio
+        const promoMovements = movements.filter(m => m.type === 'obsequio');
         const processedMovementIds = new Set<string>();
 
-        // 1. Programas de Fidelidad registrados (Customer Promotions con totalRedeemed > 0)
-        // Esta es la fuente canónica de premios de promociones ganados y canjeados por cada cliente
-        localCustomerPromos.filter(cp => (cp.totalRedeemed || 0) > 0).forEach(cp => {
+        // 1. Asignar primero movimientos que ya tengan customerId explícito coincidente
+        validCustomerPromos.forEach(cp => {
           const cust = customerMap.get(cp.customerId);
           const promo = promoMap.get(cp.promotionId);
           const custName = cust?.name || 'Cliente';
@@ -671,16 +699,14 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
           const rewardQty = promo?.rewardQuantity || 1;
           const targetCount = Number(cp.totalRedeemed) || 0;
 
-          // Buscar movimientos explícitamente asociados a este cliente y esta promoción
-          const matchingMovements = movements.filter(m => 
-            m.type === 'obsequio' && 
-            m.customerId === cp.customerId && 
+          // Buscar movimientos explícitamente asociados a este cliente y promoción
+          const explicitMatches = promoMovements.filter(m => 
+            !processedMovementIds.has(m.id) &&
+            m.customerId === cp.customerId &&
             (m.promotionId === cp.promotionId || m.relatedId === cp.promotionId)
           );
 
-          // Usar los movimientos reales hasta el límite de totalRedeemed
-          const usedMovements = matchingMovements.slice(0, targetCount);
-          usedMovements.forEach(m => {
+          explicitMatches.slice(0, targetCount).forEach(m => {
             processedMovementIds.add(m.id);
             list.push({
               id: m.id,
@@ -695,11 +721,57 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
               source: 'Canje de Promoción'
             });
           });
+        });
 
-          // Si faltan movimientos (por versiones anteriores donde no se guardó el ID o movimientos depurados),
-          // generar exactamente las entregas restantes para que coincida exactamente con totalRedeemed
-          const missingCount = targetCount - usedMovements.length;
-          for (let i = 0; i < missingCount; i++) {
+        // 2. Asociar movimientos históricos que tienen relatedId = promo.id pero no tenían customerId
+        // a los clientes que canjearon esa misma promoción (en orden cronológico)
+        const unassignedPromoMovements = promoMovements
+          .filter(m => !processedMovementIds.has(m.id))
+          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+        validCustomerPromos.forEach(cp => {
+          const cust = customerMap.get(cp.customerId);
+          const promo = promoMap.get(cp.promotionId);
+          const custName = cust?.name || 'Cliente';
+          const custPhone = cust?.phone;
+          const promoName = promo?.name || 'Promoción de Fidelidad';
+          const prizeName = promo?.name ? `Premio: ${promo.name}` : 'Premio de Promoción';
+          const rewardQty = promo?.rewardQuantity || 1;
+          const targetCount = Number(cp.totalRedeemed) || 0;
+
+          const alreadyAdded = list.filter(item => 
+            item.customerId === cp.customerId && item.promotionId === cp.promotionId
+          ).length;
+
+          let missing = targetCount - alreadyAdded;
+          if (missing <= 0) return;
+
+          // Tomar movimientos no asignados de esta promoción para este cliente
+          for (let i = 0; i < unassignedPromoMovements.length && missing > 0; i++) {
+            const m = unassignedPromoMovements[i];
+            if (processedMovementIds.has(m.id)) continue;
+
+            const matchesPromo = (m.promotionId === cp.promotionId) || (m.relatedId === cp.promotionId);
+            if (matchesPromo) {
+              processedMovementIds.add(m.id);
+              list.push({
+                id: m.id,
+                date: m.date,
+                customerId: cp.customerId,
+                customerName: custName,
+                customerPhone: custPhone,
+                promotionId: cp.promotionId,
+                promotionName: promoName,
+                productName: m.productName || prizeName,
+                quantity: Math.abs(m.quantity) || rewardQty,
+                source: 'Canje de Promoción'
+              });
+              missing--;
+            }
+          }
+
+          // Si aún faltan entregas, generar con la fecha de lastUpdate del cliente
+          for (let i = 0; i < missing; i++) {
             list.push({
               id: `cp-redeemed-${cp.id}-${i}`,
               date: cp.lastUpdate || new Date().toISOString(),
@@ -715,73 +787,25 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
           }
         });
 
-        // 2. Ventas marcadas como obsequio (sales con type: 'obsequio')
+        // 3. Ventas de tipo obsequio con cliente identificado (si existen)
         sales.filter(s => s.type === 'obsequio').forEach(s => {
           const cust = customerMap.get(s.customerId);
-          // Si hay movimientos que corresponden a esta venta, marcarlos como procesados
-          movements.filter(m => m.relatedId === s.id).forEach(m => processedMovementIds.add(m.id));
+          const custName = s.customerName || cust?.name;
+          if (!custName) return; // Si no tiene cliente, no mezclar en el reporte de promociones de clientes
 
           (s.items || []).forEach((item, idx) => {
             list.push({
               id: `sale-obsequio-${s.id}-${idx}`,
               date: s.date,
-              customerId: s.customerId || `general-${s.id}`,
-              customerName: s.customerName || cust?.name || 'Cortesía en Venta',
+              customerId: s.customerId || `cust-${custName}`,
+              customerName: custName,
               customerPhone: cust?.phone,
               promotionId: 'obsequio_venta',
-              promotionName: 'Cortesía / Obsequio en Venta',
+              promotionName: 'Cortesía en Venta',
               productName: item.name,
-              quantity: item.quantity,
+              quantity: Math.abs(item.quantity) || 1,
               source: 'Venta Obsequio'
             });
-          });
-        });
-
-        // 3. Otros movimientos de tipo 'obsequio' no procesados previamente
-        movements.filter(m => m.type === 'obsequio' && !processedMovementIds.has(m.id)).forEach(m => {
-          let custId = m.customerId || '';
-          let custName = m.customerName || '';
-          let custPhone = '';
-
-          // Si el movimiento no tiene customerId, verificar si se originó en una venta
-          if (!custId && m.relatedId) {
-            const relSale = sales.find(s => s.id === m.relatedId);
-            if (relSale && relSale.customerId) {
-              custId = relSale.customerId;
-              custName = relSale.customerName;
-            }
-          }
-
-          // Si aún no tiene cliente, asignarlo a "Cortesía General (Sin cliente)"
-          // NUNCA asignar movimientos sin cliente al primer cliente que encontremos
-          if (!custId) {
-            custId = 'cortesia_general';
-            custName = 'Cortesía General / Degustación (Sin cliente)';
-          } else {
-            const cust = customerMap.get(custId);
-            if (cust) {
-              custName = cust.name;
-              custPhone = cust.phone;
-            }
-          }
-
-          const promo = (m.promotionId ? promoMap.get(m.promotionId) : undefined) || 
-                        (m.relatedId ? promoMap.get(m.relatedId) : undefined);
-
-          const promoName = m.promotionName || promo?.name || 'Obsequio / Muestra';
-          const prizeName = m.productName || 'Producto Obsequiado';
-
-          list.push({
-            id: m.id,
-            date: m.date,
-            customerId: custId,
-            customerName: custName,
-            customerPhone: custPhone,
-            promotionId: promo?.id || m.promotionId || 'obsequio_directo',
-            promotionName: promoName,
-            productName: prizeName,
-            quantity: Math.abs(m.quantity) || 1,
-            source: custId === 'cortesia_general' ? 'Cortesía General' : 'Obsequio Registrado'
           });
         });
 
@@ -814,6 +838,11 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
         const totalDeliveriesCount = finalDeliveries.length;
         const totalUnitsDelivered = finalDeliveries.reduce((sum, d) => sum + d.quantity, 0);
         const distinctCustomersCount = new Set(finalDeliveries.map(d => d.customerId)).size;
+
+        const formatUnits = (val: number) => {
+          const rounded = Math.round((val + Number.EPSILON) * 100) / 100;
+          return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(1);
+        };
 
         const promoCountMap: { [name: string]: number } = {};
         finalDeliveries.forEach(d => {
@@ -1061,7 +1090,7 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
                   <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Unidades Obsequiadas</p>
                   <Package size={16} className="text-indigo-400" />
                 </div>
-                <p className="text-3xl font-black text-indigo-400">{totalUnitsDelivered}</p>
+                <p className="text-3xl font-black text-indigo-400">{formatUnits(totalUnitsDelivered)}</p>
                 <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Total artículos/premios</p>
               </div>
 
@@ -1121,7 +1150,7 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
                             {group.totalDeliveries} Entrega{group.totalDeliveries === 1 ? '' : 's'}
                           </span>
                           <span className="px-3 py-1 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-black uppercase tracking-wider">
-                            {group.totalUnits} {group.totalUnits === 1 ? 'Unidad' : 'Unidades'}
+                            {formatUnits(group.totalUnits)} {group.totalUnits === 1 ? 'Unidad' : 'Unidades'}
                           </span>
                         </div>
                       </div>
@@ -1156,7 +1185,7 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
 
                               <div className="text-right flex items-center sm:block gap-2 pl-9 sm:pl-0">
                                 <span className="text-xs font-black text-emerald-400">
-                                  {delivery.quantity > 0 ? `+${delivery.quantity}` : delivery.quantity} {delivery.quantity === 1 ? 'unidad' : 'unidades'}
+                                  {delivery.quantity > 0 ? `+${formatUnits(delivery.quantity)}` : formatUnits(delivery.quantity)} {delivery.quantity === 1 ? 'unidad' : 'unidades'}
                                 </span>
                               </div>
                             </div>
@@ -1213,7 +1242,7 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
                             </td>
                             <td className="p-4 text-center">
                               <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 font-black text-[11px]">
-                                {delivery.quantity}
+                                {formatUnits(delivery.quantity)}
                               </span>
                             </td>
                             <td className="p-4 text-slate-400 text-[10px] uppercase font-bold">
