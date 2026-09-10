@@ -345,6 +345,8 @@ const Promotions: React.FC<PromotionsProps> = ({ settings, company, customers, p
         }
       }
 
+      const customer = customers.find(c => c.id === cp.customerId);
+
       // Registrar movimiento como obsequio con metadatos completos para auditoría y reportes
       await dbService.put('movements', {
         id: crypto.randomUUID(),
@@ -355,8 +357,8 @@ const Promotions: React.FC<PromotionsProps> = ({ settings, company, customers, p
         quantity: -(promo.rewardQuantity || 1),
         stockAfter: remainingStock,
         relatedId: promo.id,
-        customerId: selectedCustomer?.id || '',
-        customerName: selectedCustomer?.name || '',
+        customerId: customer?.id || cp.customerId,
+        customerName: customer?.name || 'Cliente',
         promotionId: promo.id,
         promotionName: promo.name
       });
@@ -371,7 +373,6 @@ const Promotions: React.FC<PromotionsProps> = ({ settings, company, customers, p
 
       await dbService.put('customer_promotions', updated);
       loadData();
-      setShowRedeemModal(false);
     } catch (err) {
       console.error("Error al canjear promoción:", err);
     } finally {
@@ -531,7 +532,7 @@ const Promotions: React.FC<PromotionsProps> = ({ settings, company, customers, p
                             </div>
                             <div>
                               <p className="text-[10px] font-black text-white uppercase">{customer?.name || 'Cliente Desconocido'}</p>
-                              <p className="text-[8px] font-bold text-slate-500 uppercase">{cp.currentCount} / {promo.requiredQuantity}</p>
+                              <p className="text-[8px] font-bold text-slate-500 uppercase">{Number((cp.currentCount || 0).toFixed(2))} / {promo.requiredQuantity}</p>
                             </div>
                           </div>
                           <div className="flex gap-2">

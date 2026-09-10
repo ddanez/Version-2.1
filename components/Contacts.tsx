@@ -433,7 +433,7 @@ export const Contacts: React.FC<Props> = ({ type, items, setItems, relatedData, 
                                          <p className="text-[9px] text-slate-500 font-bold uppercase">{promo.description}</p>
                                       </div>
                                       <div className="text-right">
-                                         <p className="text-[10px] font-black text-orange-500">{cp.currentCount} / {promo.requiredQuantity}</p>
+                                         <p className="text-[10px] font-black text-orange-500">{Number((cp.currentCount || 0).toFixed(2))} / {promo.requiredQuantity}</p>
                                          <p className="text-[8px] text-slate-500 font-bold uppercase">Compras</p>
                                       </div>
                                    </div>

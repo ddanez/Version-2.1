@@ -74,21 +74,40 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
   const [localCustomerPromos, setLocalCustomerPromos] = useState<CustomerPromotion[]>(customerPromotions || []);
 
   useEffect(() => {
-    if (promotions && promotions.length > 0) {
-      setLocalPromotions(promotions);
-    } else {
-      dbService.getAll<Promotion>('promotions').then(res => {
-        if (res && res.length > 0) setLocalPromotions(res);
-      });
-    }
+    const syncPromos = async () => {
+      try {
+        const [rawP, rawCP] = await Promise.all([
+          dbService.getAll<any>('promotions'),
+          dbService.getAll<any>('customer_promotions')
+        ]);
 
-    if (customerPromotions && customerPromotions.length > 0) {
-      setLocalCustomerPromos(customerPromotions);
-    } else {
-      dbService.getAll<CustomerPromotion>('customer_promotions').then(res => {
-        if (res && res.length > 0) setLocalCustomerPromos(res);
-      });
-    }
+        const validPromos: Promotion[] = [];
+        const extraCP: CustomerPromotion[] = [];
+
+        (rawP || []).forEach((item: any) => {
+          if (item && item.customerId && item.promotionId) {
+            extraCP.push({
+              id: item.id || crypto.randomUUID(),
+              customerId: item.customerId,
+              promotionId: item.promotionId,
+              currentCount: Number(item.currentCount) || 0,
+              totalRedeemed: Number(item.totalRedeemed) || 0,
+              lastUpdate: item.lastUpdate || new Date().toISOString()
+            });
+          } else if (item) {
+            validPromos.push(item);
+          }
+        });
+
+        const combinedCP = [...(rawCP || []), ...extraCP];
+        setLocalPromotions(validPromos.length > 0 ? validPromos : (promotions || []));
+        setLocalCustomerPromos(combinedCP.length > 0 ? combinedCP : (customerPromotions || []));
+      } catch (err) {
+        if (promotions) setLocalPromotions(promotions);
+        if (customerPromotions) setLocalCustomerPromos(customerPromotions);
+      }
+    };
+    syncPromos();
   }, [promotions, customerPromotions]);
 
   const reportCards = [
@@ -637,99 +656,133 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
         const promoMap = new Map<string, Promotion>();
         localPromotions.forEach(p => promoMap.set(p.id, p));
 
-        // 1. Check movements of type 'obsequio'
-        movements.filter(m => m.type === 'obsequio').forEach(m => {
+        // Set to track movement IDs that have already been integrated
+        const processedMovementIds = new Set<string>();
+
+        // 1. Programas de Fidelidad registrados (Customer Promotions con totalRedeemed > 0)
+        // Esta es la fuente canónica de premios de promociones ganados y canjeados por cada cliente
+        localCustomerPromos.filter(cp => (cp.totalRedeemed || 0) > 0).forEach(cp => {
+          const cust = customerMap.get(cp.customerId);
+          const promo = promoMap.get(cp.promotionId);
+          const custName = cust?.name || 'Cliente';
+          const custPhone = cust?.phone;
+          const promoName = promo?.name || 'Promoción de Fidelidad';
+          const prizeName = promo?.name ? `Premio: ${promo.name}` : 'Premio de Promoción';
+          const rewardQty = promo?.rewardQuantity || 1;
+          const targetCount = Number(cp.totalRedeemed) || 0;
+
+          // Buscar movimientos explícitamente asociados a este cliente y esta promoción
+          const matchingMovements = movements.filter(m => 
+            m.type === 'obsequio' && 
+            m.customerId === cp.customerId && 
+            (m.promotionId === cp.promotionId || m.relatedId === cp.promotionId)
+          );
+
+          // Usar los movimientos reales hasta el límite de totalRedeemed
+          const usedMovements = matchingMovements.slice(0, targetCount);
+          usedMovements.forEach(m => {
+            processedMovementIds.add(m.id);
+            list.push({
+              id: m.id,
+              date: m.date,
+              customerId: cp.customerId,
+              customerName: custName,
+              customerPhone: custPhone,
+              promotionId: cp.promotionId,
+              promotionName: promoName,
+              productName: m.productName || prizeName,
+              quantity: Math.abs(m.quantity) || rewardQty,
+              source: 'Canje de Promoción'
+            });
+          });
+
+          // Si faltan movimientos (por versiones anteriores donde no se guardó el ID o movimientos depurados),
+          // generar exactamente las entregas restantes para que coincida exactamente con totalRedeemed
+          const missingCount = targetCount - usedMovements.length;
+          for (let i = 0; i < missingCount; i++) {
+            list.push({
+              id: `cp-redeemed-${cp.id}-${i}`,
+              date: cp.lastUpdate || new Date().toISOString(),
+              customerId: cp.customerId,
+              customerName: custName,
+              customerPhone: custPhone,
+              promotionId: cp.promotionId,
+              promotionName: promoName,
+              productName: prizeName,
+              quantity: rewardQty,
+              source: 'Canje de Promoción'
+            });
+          }
+        });
+
+        // 2. Ventas marcadas como obsequio (sales con type: 'obsequio')
+        sales.filter(s => s.type === 'obsequio').forEach(s => {
+          const cust = customerMap.get(s.customerId);
+          // Si hay movimientos que corresponden a esta venta, marcarlos como procesados
+          movements.filter(m => m.relatedId === s.id).forEach(m => processedMovementIds.add(m.id));
+
+          (s.items || []).forEach((item, idx) => {
+            list.push({
+              id: `sale-obsequio-${s.id}-${idx}`,
+              date: s.date,
+              customerId: s.customerId || `general-${s.id}`,
+              customerName: s.customerName || cust?.name || 'Cortesía en Venta',
+              customerPhone: cust?.phone,
+              promotionId: 'obsequio_venta',
+              promotionName: 'Cortesía / Obsequio en Venta',
+              productName: item.name,
+              quantity: item.quantity,
+              source: 'Venta Obsequio'
+            });
+          });
+        });
+
+        // 3. Otros movimientos de tipo 'obsequio' no procesados previamente
+        movements.filter(m => m.type === 'obsequio' && !processedMovementIds.has(m.id)).forEach(m => {
           let custId = m.customerId || '';
           let custName = m.customerName || '';
           let custPhone = '';
 
+          // Si el movimiento no tiene customerId, verificar si se originó en una venta
           if (!custId && m.relatedId) {
             const relSale = sales.find(s => s.id === m.relatedId);
-            if (relSale) {
+            if (relSale && relSale.customerId) {
               custId = relSale.customerId;
               custName = relSale.customerName;
-            } else {
-              const relCp = localCustomerPromos.find(cp => cp.promotionId === m.relatedId && cp.totalRedeemed > 0);
-              if (relCp) {
-                custId = relCp.customerId;
-              }
             }
           }
 
-          const cust = custId ? customerMap.get(custId) : undefined;
-          if (cust) {
-            custName = cust.name;
-            custPhone = cust.phone;
-          } else if (!custName) {
-            custName = 'Cliente / Canje';
+          // Si aún no tiene cliente, asignarlo a "Cortesía General (Sin cliente)"
+          // NUNCA asignar movimientos sin cliente al primer cliente que encontremos
+          if (!custId) {
+            custId = 'cortesia_general';
+            custName = 'Cortesía General / Degustación (Sin cliente)';
+          } else {
+            const cust = customerMap.get(custId);
+            if (cust) {
+              custName = cust.name;
+              custPhone = cust.phone;
+            }
           }
 
           const promo = (m.promotionId ? promoMap.get(m.promotionId) : undefined) || 
                         (m.relatedId ? promoMap.get(m.relatedId) : undefined);
 
-          const promoName = m.promotionName || promo?.name || 'Promoción de Fidelidad';
-          const prizeName = m.productName || promo?.name || 'Premio de Promoción';
+          const promoName = m.promotionName || promo?.name || 'Obsequio / Muestra';
+          const prizeName = m.productName || 'Producto Obsequiado';
 
           list.push({
             id: m.id,
             date: m.date,
-            customerId: custId || `cust-${custName}`,
+            customerId: custId,
             customerName: custName,
             customerPhone: custPhone,
-            promotionId: promo?.id || m.promotionId || m.relatedId || 'promo',
+            promotionId: promo?.id || m.promotionId || 'obsequio_directo',
             promotionName: promoName,
             productName: prizeName,
             quantity: Math.abs(m.quantity) || 1,
-            source: 'Canje de Promoción'
+            source: custId === 'cortesia_general' ? 'Cortesía General' : 'Obsequio Registrado'
           });
-        });
-
-        // 2. Check sales of type 'obsequio'
-        const movementRelatedIds = new Set(movements.map(m => m.relatedId).filter(Boolean));
-        sales.filter(s => s.type === 'obsequio' && !movementRelatedIds.has(s.id)).forEach(s => {
-          const cust = customerMap.get(s.customerId);
-          (s.items || []).forEach((item, idx) => {
-            list.push({
-              id: `${s.id}-${idx}`,
-              date: s.date,
-              customerId: s.customerId,
-              customerName: s.customerName || cust?.name || 'Cliente',
-              customerPhone: cust?.phone,
-              promotionId: 'obsequio_venta',
-              promotionName: 'Obsequio / Cortesía',
-              productName: item.name,
-              quantity: item.quantity,
-              source: 'Venta / Obsequio'
-            });
-          });
-        });
-
-        // 3. Customer promotions with totalRedeemed > 0 (fallback for past data)
-        localCustomerPromos.filter(cp => cp.totalRedeemed > 0).forEach(cp => {
-          const existingCount = list.filter(item => 
-            (item.customerId === cp.customerId) && 
-            (item.promotionId === cp.promotionId)
-          ).length;
-
-          const missingCount = cp.totalRedeemed - existingCount;
-          if (missingCount > 0) {
-            const cust = customerMap.get(cp.customerId);
-            const promo = promoMap.get(cp.promotionId);
-            for (let i = 0; i < missingCount; i++) {
-              list.push({
-                id: `cp-redeemed-${cp.id}-${i}`,
-                date: cp.lastUpdate || new Date().toISOString(),
-                customerId: cp.customerId,
-                customerName: cust?.name || 'Cliente',
-                customerPhone: cust?.phone,
-                promotionId: cp.promotionId,
-                promotionName: promo?.name || 'Promoción de Fidelidad',
-                productName: promo?.name || 'Premio de Promoción',
-                quantity: promo?.rewardQuantity || 1,
-                source: 'Canje Registrado'
-              });
-            }
-          }
         });
 
         // Chronological sort
