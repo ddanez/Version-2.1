@@ -787,28 +787,6 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
           }
         });
 
-        // 3. Ventas de tipo obsequio con cliente identificado (si existen)
-        sales.filter(s => s.type === 'obsequio').forEach(s => {
-          const cust = customerMap.get(s.customerId);
-          const custName = s.customerName || cust?.name;
-          if (!custName) return; // Si no tiene cliente, no mezclar en el reporte de promociones de clientes
-
-          (s.items || []).forEach((item, idx) => {
-            list.push({
-              id: `sale-obsequio-${s.id}-${idx}`,
-              date: s.date,
-              customerId: s.customerId || `cust-${custName}`,
-              customerName: custName,
-              customerPhone: cust?.phone,
-              promotionId: 'obsequio_venta',
-              promotionName: 'Cortesía en Venta',
-              productName: item.name,
-              quantity: Math.abs(item.quantity) || 1,
-              source: 'Venta Obsequio'
-            });
-          });
-        });
-
         // Chronological sort
         list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
