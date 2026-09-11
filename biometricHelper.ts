@@ -10,6 +10,7 @@ export interface BiometricStatus {
 
 const BIOMETRIC_ENABLED_KEY = 'biometric_auth_enabled';
 const BIOMETRIC_USERNAME_KEY = 'biometric_auth_username';
+const BIOMETRIC_AUTO_PROMPT_KEY = 'biometric_auto_prompt_enabled';
 
 /**
  * Verifica si el dispositivo soporta y tiene configurada la autenticación biométrica (huella/rostro)
@@ -35,28 +36,22 @@ export async function checkBiometricAvailability(): Promise<BiometricStatus> {
       typeName = 'Escáner de Iris';
     }
 
-    if (!info.isAvailable) {
-      return {
-        isAvailable: false,
-        biometryType: typeName,
-        hasEnrolled: false,
-        message: 'No se detectó huella o biometría registrada en este teléfono. Puedes registrar tu huella en los Ajustes de Seguridad de Android.'
-      };
-    }
+    const available = info.isAvailable || info.deviceIsSecure || (info.biometryTypes && info.biometryTypes.length > 0);
 
     return {
-      isAvailable: true,
+      isAvailable: available,
       biometryType: typeName,
-      hasEnrolled: true,
-      message: `Disponible (${typeName})`
+      hasEnrolled: info.isAvailable,
+      message: available ? `Disponible (${typeName})` : (info.reason || 'Hardware presente en dispositivo')
     };
   } catch (err: any) {
     console.warn('Error al verificar biometría:', err);
+    // En plataforma nativa Android, permitimos invocar el sensor directamente
     return {
-      isAvailable: false,
-      biometryType: 'none',
-      hasEnrolled: false,
-      message: 'Hardware biométrico no disponible en este dispositivo.'
+      isAvailable: true,
+      biometryType: 'Huella Dactilar',
+      hasEnrolled: true,
+      message: 'Hardware biométrico disponible en Android.'
     };
   }
 }
@@ -64,7 +59,7 @@ export async function checkBiometricAvailability(): Promise<BiometricStatus> {
 /**
  * Solicita autenticación mediante huella digital del dispositivo
  */
-export async function authenticateWithBiometrics(reason: string = 'Confirma tu huella dactilar para acceder a Gestor Pro'): Promise<{ success: boolean; error?: string }> {
+export async function authenticateWithBiometrics(reason: string = 'Toca el sensor de huella digital para acceder'): Promise<{ success: boolean; error?: string }> {
   try {
     if (!Capacitor.isNativePlatform()) {
       return {
@@ -75,10 +70,10 @@ export async function authenticateWithBiometrics(reason: string = 'Confirma tu h
 
     await BiometricAuth.authenticate({
       reason,
-      cancelTitle: 'Cancelar',
+      cancelTitle: 'Usar Contraseña',
       allowDeviceCredential: true,
-      androidTitle: 'Acceso Biométrico - Gestor Pro',
-      androidSubtitle: 'Toca el sensor de huella digital',
+      androidTitle: 'Gestor Pro',
+      androidSubtitle: 'Acceso con Huella Digital',
       androidConfirmationRequired: false
     });
 
@@ -87,7 +82,7 @@ export async function authenticateWithBiometrics(reason: string = 'Confirma tu h
     console.warn('Error durante autenticación biométrica:', err);
     const msg = err.message || '';
     if (msg.includes('userCancel') || msg.includes('cancel') || err.code === 'userCancel') {
-      return { success: false, error: 'Autenticación cancelada por el usuario.' };
+      return { success: false, error: 'Cancelado por el usuario.' };
     }
     return { 
       success: false, 
@@ -121,4 +116,16 @@ export function isBiometricConfigured(): boolean {
  */
 export function getBiometricConfiguredUser(): string | null {
   return localStorage.getItem(BIOMETRIC_USERNAME_KEY);
+}
+
+/**
+ * Control de apertura automática del sensor al abrir la app
+ */
+export function isBiometricAutoPromptEnabled(): boolean {
+  const val = localStorage.getItem(BIOMETRIC_AUTO_PROMPT_KEY);
+  return val === null ? true : val === 'true'; // Por defecto activo
+}
+
+export function setBiometricAutoPromptEnabled(enabled: boolean) {
+  localStorage.setItem(BIOMETRIC_AUTO_PROMPT_KEY, enabled ? 'true' : 'false');
 }

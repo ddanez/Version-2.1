@@ -2,10 +2,11 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   LayoutDashboard, Package, ShoppingCart, Tag, Users, Truck, 
-  HandCoins, Wallet, BarChart3, Settings as SettingsIcon, Menu, X, UserCheck, Camera, ChefHat
+  HandCoins, Wallet, BarChart3, Settings as SettingsIcon, Menu, X, UserCheck, Camera, ChefHat, Fingerprint
 } from 'lucide-react';
 import { AppTab, CompanyInfo, AppSettings, Product, Customer, Supplier, Sale, Purchase, Seller, User, Promotion, CustomerPromotion } from './types';
 import { dbService } from './db';
+import { isBiometricConfigured, authenticateWithBiometrics } from './biometricHelper';
 
 declare global {
   interface Window {
@@ -62,6 +63,26 @@ const App: React.FC = () => {
   const [showPermissionNudge, setShowPermissionNudge] = useState(false);
   const [showExchangeModal, setShowExchangeModal] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isBiometricLocked, setIsBiometricLocked] = useState<boolean>(() => {
+    const hasUser = !!localStorage.getItem('user_data');
+    return hasUser && isBiometricConfigured();
+  });
+
+  const handleUnlockBiometric = useCallback(async () => {
+    const res = await authenticateWithBiometrics("Toca el sensor de huella para acceder a Gestor Pro");
+    if (res.success) {
+      setIsBiometricLocked(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isBiometricLocked && user) {
+      const timer = setTimeout(() => {
+        handleUnlockBiometric();
+      }, 350);
+      return () => clearTimeout(timer);
+    }
+  }, [isBiometricLocked, user, handleUnlockBiometric]);
 
   // Efecto para controlar la duración mínima del Splash
   useEffect(() => {
@@ -346,6 +367,48 @@ const App: React.FC = () => {
   const cxpPendingItems = useMemo(() => purchases.filter(p => p.status === 'pending'), [purchases]);
 
   if (!user) return <Auth onLogin={setUser} />;
+
+  if (isBiometricLocked) {
+    return (
+      <div className="min-h-screen bg-[#0f172a] flex items-center justify-center p-6 select-none">
+        <div className="max-w-xs w-full bg-[#1e293b] border border-slate-700/80 p-8 rounded-[2.5rem] shadow-2xl text-center space-y-6 animate-in zoom-in-95">
+          <div className="w-20 h-20 bg-orange-500/10 text-orange-500 rounded-3xl flex items-center justify-center mx-auto border border-orange-500/20 shadow-lg shadow-orange-500/10">
+            <Fingerprint size={44} className="animate-pulse" />
+          </div>
+          
+          <div className="space-y-1">
+            <h2 className="text-xl font-black text-white uppercase tracking-tight">Acceso Biométrico</h2>
+            <p className="text-orange-400 text-xs font-bold uppercase tracking-wider">
+              {user.name || user.username}
+            </p>
+            <p className="text-slate-400 text-[10px] leading-relaxed">
+              Toca el sensor de huella digital de tu teléfono para ingresar a Gestor Pro
+            </p>
+          </div>
+
+          <div className="space-y-3 pt-2">
+            <button
+              onClick={handleUnlockBiometric}
+              className="w-full bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white font-black py-4 px-4 rounded-2xl shadow-xl shadow-orange-500/25 uppercase text-xs tracking-wider flex items-center justify-center gap-2.5 active:scale-95 transition-all border border-orange-400/30 touch-manipulation"
+            >
+              <Fingerprint size={20} />
+              <span>Desbloquear con Huella</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setIsBiometricLocked(false);
+                forceLogout();
+              }}
+              className="w-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white font-bold py-3 px-4 rounded-xl text-[10px] uppercase tracking-wider transition-all touch-manipulation"
+            >
+              Usar Contraseña / Salir
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (showSplash) return <Splash company={company} />;
 

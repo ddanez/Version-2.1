@@ -1,8 +1,16 @@
 
-import React, { useState } from 'react';
-import { User, Lock, Loader2, UserPlus, LogIn, ShieldCheck, Smartphone } from 'lucide-react';
-import { User as UserType } from '../types';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { User, Lock, Loader2, UserPlus, LogIn, ShieldCheck, Smartphone, Fingerprint } from 'lucide-react';
+import { User as UserType, AppTab } from '../types';
 import { dbService } from '../db';
+import { 
+  checkBiometricAvailability, 
+  authenticateWithBiometrics, 
+  getBiometricConfiguredUser, 
+  setBiometricEnabled, 
+  isBiometricAutoPromptEnabled 
+} from '../biometricHelper';
+import { Capacitor } from '@capacitor/core';
 
 interface AuthProps {
   onLogin: (user: UserType) => void;
@@ -14,13 +22,16 @@ const DEFAULT_ADMIN = {
   password: 'admin123',
   role: 'admin' as const,
   name: 'Administrador',
-  permissions: ["dashboard","inventory","sales","purchases","customers","suppliers","manufacturing","cxc","cxp","expenses","reports","settings"]
+  permissions: Object.values(AppTab)
 };
 
 export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [isBiometricPrompting, setIsBiometricPrompting] = useState(false);
+  const hasAutoPromptedRef = useRef(false);
   
   const [formData, setFormData] = useState({
     username: '',
@@ -28,6 +39,109 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     name: '',
     role: 'seller' as 'admin' | 'seller'
   });
+
+  const handleBiometricAuth = useCallback(async (isAuto = false) => {
+    if (isBiometricPrompting) return;
+    setIsBiometricPrompting(true);
+    setError('');
+
+    try {
+      const res = await authenticateWithBiometrics("Toca el sensor de huella digital para ingresar a Gestor Pro");
+      if (res.success) {
+        // Encontrar el usuario para iniciar sesión
+        let targetUser: UserType | null = null;
+        
+        let localUsers: any[] = [];
+        const saved = localStorage.getItem('local_users');
+        if (saved) {
+          try {
+            localUsers = JSON.parse(saved);
+          } catch {
+            localUsers = [];
+          }
+        }
+        if (localUsers.length === 0) {
+          localUsers = [DEFAULT_ADMIN];
+          localStorage.setItem('local_users', JSON.stringify(localUsers));
+        }
+
+        const bioUser = getBiometricConfiguredUser();
+        if (bioUser) {
+          const matched = localUsers.find(u => u.username?.toLowerCase() === bioUser.toLowerCase());
+          if (matched) targetUser = matched;
+        }
+
+        if (!targetUser) {
+          const savedUserStr = localStorage.getItem('user_data');
+          if (savedUserStr) {
+            try {
+              const parsed = JSON.parse(savedUserStr);
+              const matched = localUsers.find(u => u.username?.toLowerCase() === parsed.username?.toLowerCase());
+              if (matched) targetUser = matched;
+              else targetUser = parsed;
+            } catch {}
+          }
+        }
+
+        if (!targetUser && localUsers.length > 0) {
+          targetUser = localUsers[0];
+        }
+
+        if (!targetUser) {
+          targetUser = DEFAULT_ADMIN;
+        }
+
+        const { password, ...safeUser } = (targetUser as any);
+        const token = (targetUser as any).token || localStorage.getItem('auth_token') || 'local-offline-token';
+        const userWithToken: UserType = { ...safeUser, token };
+
+        localStorage.setItem('auth_token', token);
+        localStorage.setItem('user_data', JSON.stringify(safeUser));
+        setBiometricEnabled(safeUser.username, true);
+        dbService.setToken(token);
+        onLogin(userWithToken);
+      } else if (res.error && !res.error.toLowerCase().includes('cancel') && !isAuto) {
+        setError(res.error);
+      }
+    } catch (err: any) {
+      console.warn("Error en autenticación biométrica:", err);
+      if (!isAuto) {
+        setError("Error con el sensor de huella. Intente de nuevo o use contraseña.");
+      }
+    } finally {
+      setIsBiometricPrompting(false);
+    }
+  }, [isBiometricPrompting, onLogin]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const initBiometrics = async () => {
+      try {
+        const bio = await checkBiometricAvailability();
+        const isNative = Capacitor.isNativePlatform();
+        if (!isMounted) return;
+
+        if (bio.isAvailable || isNative) {
+          setBiometricAvailable(true);
+
+          // Disparar automáticamente la solicitud de huella al abrir la app si está en modo login
+          if (!hasAutoPromptedRef.current && isBiometricAutoPromptEnabled()) {
+            hasAutoPromptedRef.current = true;
+            setTimeout(() => {
+              if (isMounted) {
+                handleBiometricAuth(true);
+              }
+            }, 350);
+          }
+        }
+      } catch (err) {
+        console.warn("Error verificando biometría:", err);
+      }
+    };
+
+    initBiometrics();
+    return () => { isMounted = false; };
+  }, [handleBiometricAuth]);
 
   const handleLocalAuth = () => {
     try {
@@ -172,6 +286,37 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
             {isLogin ? 'Inicia sesión para continuar' : 'Crea una nueva cuenta'}
           </p>
         </div>
+
+        {isLogin && (
+          <div className="mb-6 space-y-3">
+            <button
+              type="button"
+              onClick={() => handleBiometricAuth(false)}
+              disabled={isBiometricPrompting}
+              className="w-full relative overflow-hidden group bg-gradient-to-r from-orange-500 via-amber-500 to-orange-600 hover:from-orange-600 hover:to-amber-600 text-white font-black py-4 px-4 rounded-2xl shadow-xl shadow-orange-500/25 flex items-center justify-center gap-3.5 transition-all active:scale-[0.98] border border-orange-400/40 touch-manipulation"
+            >
+              <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center backdrop-blur-sm shadow-inner shrink-0">
+                <Fingerprint size={24} className={`text-white ${isBiometricPrompting ? 'animate-bounce' : 'group-hover:scale-110 transition-transform'}`} />
+              </div>
+              <div className="text-left flex-1 min-w-0">
+                <div className="text-xs font-black uppercase tracking-wider text-white flex items-center gap-1.5">
+                  {isBiometricPrompting ? 'Sensor Activo...' : 'Ingresar con Huella Digital'}
+                </div>
+                <div className="text-[10px] text-white/90 font-semibold normal-case truncate">
+                  {isBiometricPrompting ? 'Toca el sensor de tu teléfono' : 'Acceso instantáneo con tu sensor'}
+                </div>
+              </div>
+            </button>
+
+            <div className="relative flex items-center justify-center pt-1">
+              <div className="border-t border-slate-700/80 w-full"></div>
+              <span className="bg-[#1e293b] px-3 text-[8px] font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">
+                o ingresa con tu contraseña
+              </span>
+              <div className="border-t border-slate-700/80 w-full"></div>
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="bg-rose-500/10 border border-rose-500/20 text-rose-500 text-[10px] font-bold p-3 rounded-xl mb-6 text-center uppercase tracking-wider">
