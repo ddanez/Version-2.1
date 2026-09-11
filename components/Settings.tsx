@@ -28,6 +28,15 @@ import { dbService } from '../db';
 
 import { jsPDF } from 'jspdf';
 import { TECHNICAL_DESCRIPTION, PROMOTIONAL_DESCRIPTION } from '../constants/documentation';
+import { 
+  checkBiometricAvailability, 
+  authenticateWithBiometrics, 
+  setBiometricEnabled, 
+  isBiometricConfigured, 
+  getBiometricConfiguredUser,
+  BiometricStatus 
+} from '../biometricHelper';
+import { Capacitor } from '@capacitor/core';
 
 interface Props {
   company: CompanyInfo;
@@ -43,6 +52,13 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
   const [isPreparingBackup, setIsPreparingBackup] = useState(false);
   const [preparedBackup, setPreparedBackup] = useState<{ data: string, fileName: string } | null>(null);
   const [passwordForm, setPasswordForm] = useState({ current: '', new: '', confirm: '' });
+  const [biometricStatus, setBiometricStatus] = useState<BiometricStatus>({
+    isAvailable: false,
+    biometryType: 'none',
+    hasEnrolled: false,
+    message: 'Verificando hardware...'
+  });
+  const [isBiometricActiveForUser, setIsBiometricActiveForUser] = useState(false);
   const [systemStatus, setSystemStatus] = useState({
     biometrics: 'checking',
     share: 'checking',
@@ -66,26 +82,24 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
     const checkCapabilities = async () => {
       const status = { ...systemStatus };
       
-      // Check Biometrics
-      if (!window.isSecureContext) {
-        status.biometrics = 'no-https';
-      } else if (!navigator.credentials) {
-        status.biometrics = 'not-supported';
-      } else {
-        try {
-          // We can't easily check permission without triggering a prompt in some browsers
-          // but we can check if the API exists
+      // Check Native Biometrics
+      try {
+        const bio = await checkBiometricAvailability();
+        setBiometricStatus(bio);
+        if (bio.isAvailable) {
           status.biometrics = 'available';
-        } catch {
-          status.biometrics = 'blocked';
+        } else if (!Capacitor.isNativePlatform()) {
+          status.biometrics = 'web-mode';
+        } else {
+          status.biometrics = 'not-enrolled';
         }
+      } catch {
+        status.biometrics = 'not-supported';
       }
 
       // Check Share
-      if (!navigator.share) {
+      if (!navigator.share && !Capacitor.isNativePlatform()) {
         status.share = 'not-supported';
-      } else if (!window.isSecureContext) {
-        status.share = 'no-https';
       } else {
         status.share = 'available';
       }
@@ -94,7 +108,8 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
     };
 
     checkCapabilities();
-  }, []);
+    setIsBiometricActiveForUser(isBiometricConfigured() && getBiometricConfiguredUser()?.toLowerCase() === (user.username || '').toLowerCase());
+  }, [user.username]);
   const [passwordError, setPasswordError] = useState('');
   const [passwordSuccess, setPasswordSuccess] = useState('');
 
@@ -272,48 +287,35 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
   };
 
   const handleRegisterBiometric = async () => {
-    if (!window.isSecureContext || !navigator.credentials) {
-      alert("⚠️ SEGURIDAD: El acceso biométrico requiere una conexión segura (HTTPS).\n\nSi estás usando Termux o AWebServer localmente, esta función solo se activará si accedes mediante 'localhost' o configuras un certificado SSL.");
+    if (!Capacitor.isNativePlatform()) {
+      alert("⚠️ ACCESO POR HUELLA:\n\nEl sensor de huella dactilar nativo está diseñado para la aplicación instalada (APK) en tu teléfono Android.");
+      return;
+    }
+
+    if (!biometricStatus.isAvailable) {
+      alert(biometricStatus.message || "Tu dispositivo no tiene una huella dactilar registrada. Configura una huella en los Ajustes de Seguridad de Android.");
       return;
     }
 
     try {
-      alert("Iniciando registro de huella... Sigue las instrucciones de tu dispositivo.");
-      
-      const challenge = new Uint8Array(32);
-      window.crypto.getRandomValues(challenge);
-      
-      const credential = await navigator.credentials.create({
-        publicKey: {
-          challenge,
-          rp: { name: "Gestor Pro" },
-          user: {
-            id: new TextEncoder().encode(user.id),
-            name: user.username,
-            displayName: user.name
-          },
-          pubKeyCredParams: [{ alg: -7, type: "public-key" }],
-          authenticatorSelection: { userVerification: "required" },
-          timeout: 60000
-        }
-      });
-
-      if (credential) {
-        alert("✅ Huella registrada correctamente en este dispositivo.");
+      const res = await authenticateWithBiometrics("Toca el sensor de huella para habilitar tu acceso rápido a Gestor Pro");
+      if (res.success) {
+        setBiometricEnabled(user.username, true);
+        setIsBiometricActiveForUser(true);
+        alert(`✅ ¡Huella dactilar activada correctamente para "${user.username}"!\n\nAhora podrás iniciar sesión instantáneamente tocando el sensor de huella en la pantalla de acceso.`);
+      } else if (res.error) {
+        alert("Aviso de huella: " + res.error);
       }
     } catch (err: any) {
-      // Manejo silencioso en consola para evitar ruidos de error innecesarios
-      console.warn("WebAuthn Attempt:", err.name, err.message);
-      
-      if (err.name === 'SecurityError' || err.message?.toLowerCase().includes('permissions policy') || err.message?.toLowerCase().includes('not enabled')) {
-        alert("⚠️ RESTRICCIÓN DE SEGURIDAD:\n\nEl editor de previsualización bloquea el acceso a la huella por seguridad.\n\nSOLUCIÓN: Esta función se activará automáticamente cuando instales la app en tu teléfono (vía Termux o AWebServer) y accedas por 'localhost'.");
-      } else if (err.name === 'NotAllowedError') {
-        alert("Operación cancelada o tiempo de espera agotado.");
-      } else if (err.name === 'NotSupportedError') {
-        alert("Tu dispositivo o navegador no soporta autenticación biométrica WebAuthn.");
-      } else {
-        alert("Error al configurar huella: " + err.message);
-      }
+      alert("Error con el sensor biométrico: " + (err.message || 'Intente de nuevo.'));
+    }
+  };
+
+  const handleDisableBiometric = () => {
+    if (confirm("¿Deseas desactivar el acceso por huella para este usuario?")) {
+      setBiometricEnabled(user.username, false);
+      setIsBiometricActiveForUser(false);
+      alert("Acceso por huella desactivado.");
     }
   };
 
@@ -364,31 +366,86 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
 
     setIsChangingPassword(true);
     try {
-      const response = await fetch('/api/auth/change-password', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.token}`
-        },
-        body: JSON.stringify({
-          currentPassword: passwordForm.current,
-          newPassword: passwordForm.new
-        })
-      });
-
-      const contentType = response.headers.get("content-type");
-      if (contentType && contentType.indexOf("application/json") !== -1) {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || 'Error al cambiar contraseña');
-        setPasswordSuccess('Contraseña actualizada correctamente');
-        setPasswordForm({ current: '', new: '', confirm: '' });
-      } else {
-        const text = await response.text();
-        console.error("Respuesta no JSON del servidor:", text);
-        throw new Error(`Error del servidor (${response.status}). Intente de nuevo más tarde.`);
+      // 1. Manejo local de contraseñas (garantiza funcionamiento en APK y modo sin servidor)
+      let localUsers: any[] = [];
+      const saved = localStorage.getItem('local_users');
+      if (saved) {
+        try {
+          localUsers = JSON.parse(saved);
+        } catch {
+          localUsers = [];
+        }
       }
+
+      const currentUsername = (user.username || 'admin').toLowerCase();
+      let matchedIdx = localUsers.findIndex(
+        (u: any) => u.username?.toLowerCase() === currentUsername
+      );
+
+      // Si no existe el usuario en local_users, crearlo con el usuario actual
+      if (matchedIdx === -1) {
+        const defaultAdmin = {
+          id: user.id || 'admin-local',
+          username: user.username || 'admin',
+          password: 'admin123',
+          name: user.name || 'Administrador',
+          role: user.role || 'admin',
+          permissions: user.permissions || []
+        };
+        localUsers.push(defaultAdmin);
+        matchedIdx = localUsers.length - 1;
+      }
+
+      const targetUser = localUsers[matchedIdx];
+      // Verificar contraseña actual
+      if (targetUser.password && targetUser.password !== passwordForm.current) {
+        throw new Error('La contraseña actual no es correcta.');
+      }
+
+      // Actualizar contraseña localmente
+      targetUser.password = passwordForm.new;
+      localUsers[matchedIdx] = targetUser;
+      localStorage.setItem('local_users', JSON.stringify(localUsers));
+
+      // Actualizar objeto de usuario en sesión
+      try {
+        const savedUserStr = localStorage.getItem('user_data');
+        if (savedUserStr) {
+          const uData = JSON.parse(savedUserStr);
+          localStorage.setItem('user_data', JSON.stringify({ ...uData, password: passwordForm.new }));
+        }
+      } catch (e) {
+        console.warn('Error al actualizar user_data en sesión:', e);
+      }
+
+      // 2. Si hay servidor remoto configurado o en línea, intentar sincronizar en segundo plano
+      const baseUrl = dbService.getBaseUrl();
+      if (baseUrl || (user.token && user.token !== 'local-offline-token')) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 3500);
+          await fetch(`${baseUrl}/api/auth/change-password`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${user.token}`
+            },
+            body: JSON.stringify({
+              currentPassword: passwordForm.current,
+              newPassword: passwordForm.new
+            }),
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+        } catch (serverErr) {
+          console.warn("Nota: Contraseña actualizada localmente. El servidor remoto no respondió:", serverErr);
+        }
+      }
+
+      setPasswordSuccess('¡Contraseña actualizada correctamente!');
+      setPasswordForm({ current: '', new: '', confirm: '' });
     } catch (err: any) {
-      setPasswordError(err.message);
+      setPasswordError(err.message || 'Error al cambiar contraseña');
     } finally {
       setIsChangingPassword(false);
     }
@@ -712,28 +769,56 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
             <section className="bg-[#1e293b] p-6 rounded-[2.5rem] border border-slate-700 shadow-xl space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-xs font-black uppercase tracking-widest text-indigo-400 flex items-center gap-2">
-                  <Fingerprint size={16} /> Acceso Biométrico
+                  <Fingerprint size={16} /> Acceso por Huella Digital
                 </h2>
-                <div className={`px-2 py-1 rounded-md text-[8px] font-bold uppercase tracking-tighter ${
-                  systemStatus.biometrics === 'available' ? 'bg-emerald-500/20 text-emerald-400' : 
-                  systemStatus.biometrics === 'no-https' ? 'bg-orange-500/20 text-orange-400' : 'bg-rose-500/20 text-rose-400'
+                <div className={`px-2.5 py-1 rounded-md text-[8px] font-bold uppercase tracking-tighter ${
+                  isBiometricActiveForUser ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 
+                  biometricStatus.isAvailable ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' : 'bg-slate-700/50 text-slate-400'
                 }`}>
-                  {systemStatus.biometrics === 'available' ? 'Disponible' : 
-                   systemStatus.biometrics === 'no-https' ? 'Requiere HTTPS' : 'No Disponible'}
+                  {isBiometricActiveForUser ? 'ACTIVA' : 
+                   biometricStatus.isAvailable ? 'DISPONIBLE' : 
+                   Capacitor.isNativePlatform() ? 'SIN HUELLA' : 'EN APK MÓVIL'}
                 </div>
               </div>
-              <div className="p-4 bg-indigo-500/5 border border-indigo-500/20 rounded-2xl">
-                <p className="text-[10px] font-bold text-slate-400 uppercase leading-relaxed tracking-tight">
-                  EL ACCESO POR HUELLA (WEBAUTHN) REQUIERE UNA CONEXIÓN SEGURA (HTTPS) O LOCALHOST. 
-                  ESTA FUNCIÓN ESTÁ DISEÑADA PARA TU INSTALACIÓN FINAL EN ANDROID.
+              <div className="p-4 bg-indigo-500/5 border border-indigo-500/20 rounded-2xl space-y-3">
+                <p className="text-[10px] font-bold text-slate-300 uppercase leading-relaxed tracking-tight">
+                  {isBiometricActiveForUser
+                    ? `La huella dactilar está vinculada al usuario (${user.username}). Puedes iniciar sesión instantáneamente desde la pantalla de bienvenida.`
+                    : 'Vincula el sensor de huella de tu teléfono para iniciar sesión de forma rápida y segura sin escribir la contraseña.'}
                 </p>
-                <button 
-                  type="button"
-                  onClick={handleRegisterBiometric}
-                  className="mt-4 w-full bg-indigo-500/10 hover:bg-indigo-500 text-indigo-500 hover:text-white border border-indigo-500/30 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2"
-                >
-                  {systemStatus.biometrics === 'available' ? 'CONFIGURAR HUELLA' : 'PROBAR COMPATIBILIDAD'}
-                </button>
+
+                {biometricStatus.message && !isBiometricActiveForUser && (
+                  <p className="text-[9px] text-slate-400 font-semibold italic">
+                    ℹ️ {biometricStatus.message}
+                  </p>
+                )}
+
+                {isBiometricActiveForUser ? (
+                  <div className="flex gap-2 pt-1">
+                    <button 
+                      type="button"
+                      onClick={handleRegisterBiometric}
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-md active:scale-95"
+                    >
+                      <Fingerprint size={14} /> Probar Huella
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={handleDisableBiometric}
+                      className="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 px-4 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all active:scale-95"
+                    >
+                      Desactivar
+                    </button>
+                  </div>
+                ) : (
+                  <button 
+                    type="button"
+                    onClick={handleRegisterBiometric}
+                    className="mt-2 w-full bg-indigo-600 hover:bg-indigo-500 text-white py-3.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20 active:scale-95"
+                  >
+                    <Fingerprint size={16} /> CONFIGURAR HUELLA DIGITAL
+                  </button>
+                )}
               </div>
             </section>
 
