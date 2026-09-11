@@ -34,7 +34,15 @@ app.use((req, res, next) => {
 
 const db = new sqlite3.Database(DB_PATH, (err) => {
   if (err) console.error('❌ Error DB:', err);
-  else console.log('🗄️ SQLite conectado en:', DB_PATH);
+  else {
+    console.log('🗄️ SQLite conectado en:', DB_PATH);
+    // Modo de alto rendimiento para SQLite (muy efectivo en Termux / Android)
+    db.run("PRAGMA journal_mode = WAL;");
+    db.run("PRAGMA synchronous = NORMAL;");
+    db.run("PRAGMA temp_store = MEMORY;");
+    db.run("PRAGMA cache_size = -64000;");
+    db.run("PRAGMA busy_timeout = 5000;");
+  }
 });
 
 const VALID_STORES = ['products', 'customers', 'suppliers', 'sales', 'purchases', 'settings', 'sellers', 'payments', 'users', 'authenticators', 'expenses', 'movements', 'ingredients', 'recipes', 'promotions', 'customer_promotions'];
@@ -214,6 +222,81 @@ app.post('/api/system/reset', authenticateToken, (req: any, res: any) => {
       db.run('ROLLBACK');
       res.status(500).json({ message: 'Error interno durante el reset' });
     }
+  });
+});
+
+// --- API: BOOTSTRAP DE ALTO RENDIMIENTO (Carga todo en 1 sola llamada instantánea) ---
+app.get('/api/bootstrap', authenticateToken, (req: any, res: any) => {
+  const storesToLoad = ['products', 'customers', 'suppliers', 'sales', 'purchases', 'settings', 'sellers', 'payments', 'expenses', 'movements', 'promotions', 'customer_promotions'];
+  const results: Record<string, any[]> = {};
+  let pending = storesToLoad.length;
+  let hasError = false;
+
+  storesToLoad.forEach(store => {
+    db.all(`SELECT data FROM ${store}`, [], (err, rows: any[]) => {
+      if (hasError) return;
+      if (err) {
+        hasError = true;
+        return res.status(500).json({ message: err.message });
+      }
+      try {
+        results[store] = rows ? rows.map(r => JSON.parse(r.data)) : [];
+      } catch (e) {
+        results[store] = [];
+      }
+      pending--;
+      if (pending === 0) {
+        res.json(results);
+      }
+    });
+  });
+});
+
+// --- API: BATCH MULTI-ALMACÉN (Guardar múltiples entidades en 1 sola transacción) ---
+app.post('/api/batch', authenticateToken, (req: any, res: any) => {
+  const operations: Array<{ store: string; items: any[] }> = req.body;
+  if (!Array.isArray(operations)) {
+    return res.status(400).json({ message: 'Se esperaba un arreglo de operaciones' });
+  }
+
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
+    for (const op of operations) {
+      if (!VALID_STORES.includes(op.store) || op.store === 'users' || op.store === 'authenticators') continue;
+      const stmt = db.prepare(`INSERT OR REPLACE INTO ${op.store} (id, data) VALUES (?, ?)`);
+      for (const item of (op.items || [])) {
+        if (!item || !item.id) continue;
+        stmt.run(item.id, JSON.stringify(item));
+      }
+      stmt.finalize();
+    }
+    db.run('COMMIT', (err) => {
+      if (err) return res.status(500).json({ message: err.message });
+      res.json({ success: true });
+    });
+  });
+});
+
+// --- API: BULK PARA UN SOLO ALMACÉN ---
+app.post('/api/:store/bulk', authenticateToken, (req: any, res: any) => {
+  const { store } = req.params;
+  const items = req.body;
+  if (!VALID_STORES.includes(store) || store === 'users') return res.status(400).json({ message: 'Almacén no válido' });
+  if (!Array.isArray(items)) return res.status(400).json({ message: 'Se esperaba un array' });
+
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
+    const stmt = db.prepare(`INSERT OR REPLACE INTO ${store} (id, data) VALUES (?, ?)`);
+    for (const item of items) {
+      if (item && item.id) {
+        stmt.run(item.id, JSON.stringify(item));
+      }
+    }
+    stmt.finalize();
+    db.run('COMMIT', (err) => {
+      if (err) return res.status(500).json({ message: err.message });
+      res.json({ success: true, count: items.length });
+    });
   });
 });
 

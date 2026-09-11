@@ -79,20 +79,44 @@ export class DBService {
     return transaction.objectStore(storeName);
   }
 
-  async getAll<T>(storeName: string): Promise<T[]> {
-    // Obtener datos locales primero como respaldo
-    const localData = await new Promise<T[]>(async (resolve) => {
-      try {
-        const store = await this.getStore(storeName, 'readonly');
-        const request = store.getAll();
-        request.onsuccess = () => resolve(request.result as T[]);
-        request.onerror = () => resolve([]);
-      } catch (e) {
-        resolve([]);
+  // Carga instantánea de todas las entidades en 1 sola llamada HTTP
+  async bootstrap(): Promise<Record<string, any[]> | null> {
+    if (!this.token) return null;
+    try {
+      const response = await fetch('/api/bootstrap', { headers: this.getHeaders() });
+      if (response.status === 401 || response.status === 403) {
+        this.handleSessionExpired();
+        throw new Error("SESSION_EXPIRED");
       }
-    });
+      if (response.ok) {
+        const data = await response.json();
+        // Sincronizar con IndexedDB en segundo plano sin congelar la interfaz
+        setTimeout(async () => {
+          try {
+            await this.init();
+            if (!this.db) return;
+            Object.entries(data).forEach(([storeName, items]: [string, any]) => {
+              if (this.db?.objectStoreNames.contains(storeName) && Array.isArray(items) && items.length > 0) {
+                const tx = this.db.transaction(storeName, 'readwrite');
+                const store = tx.objectStore(storeName);
+                items.forEach(item => store.put(item));
+              }
+            });
+          } catch (e) {
+            // No bloqueante
+          }
+        }, 50);
+        return data;
+      }
+    } catch (err: any) {
+      if (err.message === "SESSION_EXPIRED") throw err;
+      console.warn("Error en bootstrap, recurriendo a carga local:", err);
+    }
+    return null;
+  }
 
-    // Intentar obtener del backend
+  async getAll<T>(storeName: string): Promise<T[]> {
+    // Si tenemos token, hacemos la petición directa para máxima velocidad
     if (this.token) {
       try {
         const response = await fetch(`/api/${storeName}`, { headers: this.getHeaders() });
@@ -104,37 +128,109 @@ export class DBService {
           const contentType = response.headers.get("content-type");
           if (contentType && contentType.indexOf("application/json") !== -1) {
             const data = await response.json();
-            
-            // Sincronizar localmente
-            const store = await this.getStore(storeName, 'readwrite');
-            
-            if (data && data.length > 0) {
-              // El backend tiene datos, actualizamos lo local sin borrar para no perder registros no sincronizados
-              data.forEach((item: any) => store.put(item));
-              return data;
-            } else if (localData.length > 0) {
-              // El backend está vacío pero tenemos datos locales (posiblemente primera sincronización)
-              console.log(`Sincronizando ${localData.length} registros locales de ${storeName} con el servidor...`);
-              // Subir datos locales al backend de forma asíncrona
-              localData.forEach(item => {
-                fetch(`/api/${storeName}`, {
-                  method: 'POST',
-                  headers: this.getHeaders(),
-                  body: JSON.stringify(item)
-                }).catch(e => console.error(`Error sincronizando ${storeName}:`, e));
-              });
-              return localData;
-            }
-            
+            // Sincronizar en segundo plano
+            setTimeout(async () => {
+              try {
+                if (data && data.length > 0) {
+                  const store = await this.getStore(storeName, 'readwrite');
+                  data.forEach((item: any) => store.put(item));
+                }
+              } catch (e) {}
+            }, 10);
             return data;
           }
         }
-      } catch (err) {
+      } catch (err: any) {
+        if (err.message === "SESSION_EXPIRED") throw err;
         console.warn(`Error al obtener ${storeName} del backend, usando local:`, err);
       }
     }
 
-    return localData;
+    // Fallback a IndexedDB si no hay conexión o falla el backend
+    return new Promise<T[]>(async (resolve) => {
+      try {
+        const store = await this.getStore(storeName, 'readonly');
+        const request = store.getAll();
+        request.onsuccess = () => resolve(request.result as T[]);
+        request.onerror = () => resolve([]);
+      } catch (e) {
+        resolve([]);
+      }
+    });
+  }
+
+  async putMany<T extends { id?: string }>(storeName: string, items: T[]): Promise<void> {
+    if (!items || items.length === 0) return;
+
+    // Guardar en IndexedDB localmente
+    try {
+      await this.init();
+      if (this.db && this.db.objectStoreNames.contains(storeName)) {
+        const tx = this.db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        for (const item of items) {
+          store.put(item);
+        }
+      }
+    } catch (e) {
+      console.warn(`Error guardando localmente en ${storeName}:`, e);
+    }
+
+    // Enviar en lote al backend
+    if (this.token) {
+      try {
+        const response = await fetch(`/api/${storeName}/bulk`, {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(items)
+        });
+        if (response.status === 401 || response.status === 403) {
+          this.handleSessionExpired();
+          throw new Error("SESSION_EXPIRED");
+        }
+      } catch (err: any) {
+        if (err.message === "SESSION_EXPIRED") throw err;
+        console.warn(`Error al guardar lote en ${storeName}:`, err);
+      }
+    }
+  }
+
+  async batch(operations: Array<{ store: string; items: any[] }>): Promise<void> {
+    if (!operations || operations.length === 0) return;
+
+    // Guardar localmente
+    try {
+      await this.init();
+      if (this.db) {
+        operations.forEach(op => {
+          if (this.db?.objectStoreNames.contains(op.store) && Array.isArray(op.items)) {
+            const tx = this.db.transaction(op.store, 'readwrite');
+            const store = tx.objectStore(op.store);
+            op.items.forEach(item => store.put(item));
+          }
+        });
+      }
+    } catch (e) {
+      console.warn("Error guardando lote local:", e);
+    }
+
+    // Enviar al backend en 1 sola llamada
+    if (this.token) {
+      try {
+        const response = await fetch('/api/batch', {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(operations)
+        });
+        if (response.status === 401 || response.status === 403) {
+          this.handleSessionExpired();
+          throw new Error("SESSION_EXPIRED");
+        }
+      } catch (err: any) {
+        if (err.message === "SESSION_EXPIRED") throw err;
+        console.warn("Error en /api/batch:", err);
+      }
+    }
   }
 
   async put<T>(storeName: string, item: T): Promise<void> {

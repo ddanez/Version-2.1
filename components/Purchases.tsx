@@ -87,6 +87,8 @@ const Purchases: React.FC<Props> = ({ purchases, setPurchases, suppliers, setSup
 
       const freshProducts = await dbService.getAll<Product>('products');
       let currentProducts = [...freshProducts];
+      const productsToUpdateMap = new Map<string, Product>();
+      const movementsToSave: any[] = [];
       
       // Si es una edición, primero restauramos el stock original en nuestra copia local
       if (editingPurchase) {
@@ -97,10 +99,10 @@ const Purchases: React.FC<Props> = ({ purchases, setPurchases, suppliers, setSup
               ...currentProducts[pIndex],
               stock: (currentProducts[pIndex].stock || 0) - (item.quantity || 0)
             };
-            await dbService.put('products', currentProducts[pIndex]);
+            productsToUpdateMap.set(currentProducts[pIndex].id, currentProducts[pIndex]);
             
             // Registrar restauración
-            await dbService.put('movements', {
+            movementsToSave.push({
               id: crypto.randomUUID(),
               date: new Date().toISOString(),
               productId: item.productId,
@@ -124,10 +126,10 @@ const Purchases: React.FC<Props> = ({ purchases, setPurchases, suppliers, setSup
             costUSD: item.costUSD || currentProducts[pIndex].costUSD,
             priceUSD: item.newSalePriceUSD || currentProducts[pIndex].priceUSD
           };
-          await dbService.put('products', currentProducts[pIndex]);
+          productsToUpdateMap.set(currentProducts[pIndex].id, currentProducts[pIndex]);
 
           // Registrar compra
-          await dbService.put('movements', {
+          movementsToSave.push({
             id: crypto.randomUUID(),
             date: new Date().toISOString(),
             productId: item.productId,
@@ -138,6 +140,14 @@ const Purchases: React.FC<Props> = ({ purchases, setPurchases, suppliers, setSup
             relatedId: newPurchase.id
           });
         }
+      }
+
+      // Guardado en lote ultrarrápido
+      if (productsToUpdateMap.size > 0) {
+        await dbService.putMany('products', Array.from(productsToUpdateMap.values()));
+      }
+      if (movementsToSave.length > 0) {
+        await dbService.putMany('movements', movementsToSave);
       }
 
       await dbService.put('purchases', newPurchase);

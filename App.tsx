@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   LayoutDashboard, Package, ShoppingCart, Tag, Users, Truck, 
   HandCoins, Wallet, BarChart3, Settings as SettingsIcon, Menu, X, UserCheck, Camera, ChefHat
@@ -118,25 +118,61 @@ const App: React.FC = () => {
   const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [customerPromotions, setCustomerPromotions] = useState<CustomerPromotion[]>([]);
 
-  const loadData = useCallback(async () => {
+  const lastDataLoadRef = useRef<number>(0);
+
+  const loadData = useCallback(async (force = false) => {
     if (!user) return;
     try {
       dbService.setToken(user.token || null);
-      await dbService.init();
-      const [p, c, s, sa, pu, st, sel, pay, ex, mov, pro, cpro] = await Promise.all([
-        dbService.getAll<Product>('products'),
-        dbService.getAll<Customer>('customers'),
-        dbService.getAll<Supplier>('suppliers'),
-        dbService.getAll<Sale>('sales'),
-        dbService.getAll<Purchase>('purchases'),
-        dbService.getAll<any>('settings'),
-        dbService.getAll<Seller>('sellers'),
-        dbService.getAll<any>('payments'),
-        dbService.getAll<any>('expenses'),
-        dbService.getAll<any>('movements'),
-        dbService.getAll<any>('promotions'),
-        dbService.getAll<any>('customer_promotions')
-      ]);
+      lastDataLoadRef.current = Date.now();
+
+      // Intento 1: Bootstrap de alto rendimiento (1 sola llamada ultrarrápida)
+      const bootData = await dbService.bootstrap();
+
+      let p: Product[] = [];
+      let c: Customer[] = [];
+      let s: Supplier[] = [];
+      let sa: Sale[] = [];
+      let pu: Purchase[] = [];
+      let st: any[] = [];
+      let sel: Seller[] = [];
+      let pay: any[] = [];
+      let ex: any[] = [];
+      let mov: any[] = [];
+      let pro: Promotion[] = [];
+      let cpro: CustomerPromotion[] = [];
+
+      if (bootData) {
+        p = bootData.products || [];
+        c = bootData.customers || [];
+        s = bootData.suppliers || [];
+        sa = bootData.sales || [];
+        pu = bootData.purchases || [];
+        st = bootData.settings || [];
+        sel = bootData.sellers || [];
+        pay = bootData.payments || [];
+        ex = bootData.expenses || [];
+        mov = bootData.movements || [];
+        pro = bootData.promotions || [];
+        cpro = bootData.customer_promotions || [];
+      } else {
+        // Fallback: Si no hay bootstrap disponible
+        await dbService.init();
+        [p, c, s, sa, pu, st, sel, pay, ex, mov, pro, cpro] = await Promise.all([
+          dbService.getAll<Product>('products'),
+          dbService.getAll<Customer>('customers'),
+          dbService.getAll<Supplier>('suppliers'),
+          dbService.getAll<Sale>('sales'),
+          dbService.getAll<Purchase>('purchases'),
+          dbService.getAll<any>('settings'),
+          dbService.getAll<Seller>('sellers'),
+          dbService.getAll<any>('payments'),
+          dbService.getAll<any>('expenses'),
+          dbService.getAll<any>('movements'),
+          dbService.getAll<any>('promotions'),
+          dbService.getAll<any>('customer_promotions')
+        ]);
+      }
 
       setProducts(p || []);
       setCustomers(c || []);
@@ -233,8 +269,12 @@ const App: React.FC = () => {
         // Al volver a primer plano, nos aseguramos de que el historial esté correcto
         window.history.pushState(null, "", window.location.pathname);
         localStorage.setItem('last_active_time', Date.now().toString());
-        console.log("App en primer plano - Restaurando estado");
-        loadData();
+        // Solo refrescar si han pasado más de 3 minutos de inactividad
+        const elapsed = Date.now() - lastDataLoadRef.current;
+        if (elapsed > 180000) {
+          console.log("App en primer plano - Sincronizando datos");
+          loadData();
+        }
       }
     };
     window.document.addEventListener('visibilitychange', handleVisibilityChange);

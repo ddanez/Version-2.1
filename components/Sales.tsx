@@ -175,6 +175,8 @@ const Sales: React.FC<Props> = ({ sales, setSales, customers, setCustomers, prod
       // Obtener productos frescos de la DB para evitar problemas de estado asíncrono
       const freshProducts = await dbService.getAll<Product>('products');
       let currentProducts = [...freshProducts];
+      const productsToUpdateMap = new Map<string, Product>();
+      const movementsToSave: any[] = [];
       
       // Si es una edición, primero restauramos el stock original en nuestra copia local
       if (editingSale) {
@@ -189,12 +191,11 @@ const Sales: React.FC<Props> = ({ sales, setSales, customers, setCustomers, prod
               ...currentProducts[pIndex],
               stock: (currentProducts[pIndex].stock || 0) + qtyToRestore
             };
-            // Actualizamos en DB individualmente para asegurar persistencia
-            await dbService.put('products', currentProducts[pIndex]);
+            productsToUpdateMap.set(currentProducts[pIndex].id, currentProducts[pIndex]);
 
             // Registrar restauración (solo si hubo algo que restaurar)
             if (qtyToRestore > 0) {
-              await dbService.put('movements', {
+              movementsToSave.push({
                 id: crypto.randomUUID(),
                 date: newSale.date,
                 productId: item.productId,
@@ -217,10 +218,10 @@ const Sales: React.FC<Props> = ({ sales, setSales, customers, setCustomers, prod
             ...currentProducts[pIndex],
             stock: (currentProducts[pIndex].stock || 0) - (item.quantity || 0)
           };
-          await dbService.put('products', currentProducts[pIndex]);
+          productsToUpdateMap.set(currentProducts[pIndex].id, currentProducts[pIndex]);
 
           // Registrar venta
-          await dbService.put('movements', {
+          movementsToSave.push({
             id: crypto.randomUUID(),
             date: newSale.date,
             productId: item.productId,
@@ -231,6 +232,14 @@ const Sales: React.FC<Props> = ({ sales, setSales, customers, setCustomers, prod
             relatedId: newSale.id
           });
         }
+      }
+
+      // Guardado por lotes ultrarrápido (1 sola transacción para productos y movimientos)
+      if (productsToUpdateMap.size > 0) {
+        await dbService.putMany('products', Array.from(productsToUpdateMap.values()));
+      }
+      if (movementsToSave.length > 0) {
+        await dbService.putMany('movements', movementsToSave);
       }
 
       await dbService.put('sales', newSale);

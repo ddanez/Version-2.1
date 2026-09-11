@@ -74,64 +74,12 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
   const [localCustomerPromos, setLocalCustomerPromos] = useState<CustomerPromotion[]>(customerPromotions || []);
 
   useEffect(() => {
-    const syncPromos = async () => {
-      try {
-        const [rawP, rawCP] = await Promise.all([
-          dbService.getAll<any>('promotions'),
-          dbService.getAll<any>('customer_promotions')
-        ]);
-
-        const validPromos: Promotion[] = [];
-        const extraCP: CustomerPromotion[] = [];
-
-        (rawP || []).forEach((item: any) => {
-          if (item && item.customerId && item.promotionId) {
-            extraCP.push({
-              id: item.id || crypto.randomUUID(),
-              customerId: item.customerId,
-              promotionId: item.promotionId,
-              currentCount: Number(item.currentCount) || 0,
-              totalRedeemed: Number(item.totalRedeemed) || 0,
-              lastUpdate: item.lastUpdate || new Date().toISOString()
-            });
-          } else if (item) {
-            validPromos.push(item);
-          }
-        });
-
-        const dedupedCPMap = new Map<string, CustomerPromotion>();
-        [...(rawCP || []), ...extraCP].forEach((item: any) => {
-          if (!item || !item.customerId || !item.promotionId) return;
-          const key = `${item.customerId}_${item.promotionId}`;
-          const current: CustomerPromotion = {
-            id: item.id || crypto.randomUUID(),
-            customerId: item.customerId,
-            promotionId: item.promotionId,
-            currentCount: Number(item.currentCount) || 0,
-            totalRedeemed: Number(item.totalRedeemed) || 0,
-            lastUpdate: item.lastUpdate || new Date().toISOString()
-          };
-          if (!dedupedCPMap.has(key)) {
-            dedupedCPMap.set(key, current);
-          } else {
-            const existing = dedupedCPMap.get(key)!;
-            dedupedCPMap.set(key, {
-              ...existing,
-              currentCount: Math.max(existing.currentCount, current.currentCount),
-              totalRedeemed: Math.max(existing.totalRedeemed, current.totalRedeemed),
-              lastUpdate: existing.lastUpdate > current.lastUpdate ? existing.lastUpdate : current.lastUpdate
-            });
-          }
-        });
-        const combinedCP = Array.from(dedupedCPMap.values());
-        setLocalPromotions(validPromos.length > 0 ? validPromos : (promotions || []));
-        setLocalCustomerPromos(combinedCP.length > 0 ? combinedCP : (customerPromotions || []));
-      } catch (err) {
-        if (promotions) setLocalPromotions(promotions);
-        if (customerPromotions) setLocalCustomerPromos(customerPromotions);
-      }
-    };
-    syncPromos();
+    if (promotions && promotions.length > 0) {
+      setLocalPromotions(promotions);
+    }
+    if (customerPromotions && customerPromotions.length > 0) {
+      setLocalCustomerPromos(customerPromotions);
+    }
   }, [promotions, customerPromotions]);
 
   const reportCards = [
