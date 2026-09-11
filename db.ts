@@ -1,7 +1,7 @@
 // db.ts - Implementación con Backend API y Fallback a IndexedDB
 const DB_NAME = 'GestorProDB';
-const DB_VERSION = 8;
-const STORES = ['products', 'customers', 'suppliers', 'sales', 'purchases', 'settings', 'sellers', 'payments', 'authenticators', 'expenses', 'movements', 'ingredients', 'recipes', 'promotions', 'customer_promotions'];
+const DB_VERSION = 9;
+const STORES = ['products', 'customers', 'suppliers', 'sales', 'purchases', 'settings', 'sellers', 'payments', 'authenticators', 'expenses', 'movements', 'ingredients', 'recipes', 'promotions', 'customer_promotions', 'users'];
 
 export class DBService {
   private db: IDBDatabase | null = null;
@@ -10,6 +10,10 @@ export class DBService {
 
   setToken(token: string | null) {
     this.token = token;
+  }
+
+  isLocalMode(): boolean {
+    return !this.token || this.token === 'local-offline-token';
   }
 
   private isHandlingSessionExpired = false;
@@ -81,7 +85,7 @@ export class DBService {
 
   // Carga instantánea de todas las entidades en 1 sola llamada HTTP
   async bootstrap(): Promise<Record<string, any[]> | null> {
-    if (!this.token) return null;
+    if (this.isLocalMode()) return null;
     try {
       const response = await fetch('/api/bootstrap', { headers: this.getHeaders() });
       if (response.status === 401 || response.status === 403) {
@@ -116,8 +120,8 @@ export class DBService {
   }
 
   async getAll<T>(storeName: string): Promise<T[]> {
-    // Si tenemos token, hacemos la petición directa para máxima velocidad
-    if (this.token) {
+    // Si tenemos token y no es local, hacemos la petición directa para máxima velocidad
+    if (!this.isLocalMode()) {
       try {
         const response = await fetch(`/api/${storeName}`, { headers: this.getHeaders() });
         if (response.status === 401 || response.status === 403) {
@@ -177,7 +181,7 @@ export class DBService {
     }
 
     // Enviar en lote al backend
-    if (this.token) {
+    if (!this.isLocalMode()) {
       try {
         const response = await fetch(`/api/${storeName}/bulk`, {
           method: 'POST',
@@ -215,7 +219,7 @@ export class DBService {
     }
 
     // Enviar al backend en 1 sola llamada
-    if (this.token) {
+    if (!this.isLocalMode()) {
       try {
         const response = await fetch('/api/batch', {
           method: 'POST',
@@ -243,7 +247,7 @@ export class DBService {
     });
 
     // Intentar guardar en el backend
-    if (this.token) {
+    if (!this.isLocalMode()) {
       try {
         const response = await fetch(`/api/${storeName}`, {
           method: 'POST',
@@ -272,7 +276,7 @@ export class DBService {
     });
 
     // Intentar eliminar en el backend
-    if (this.token) {
+    if (!this.isLocalMode()) {
       try {
         const response = await fetch(`/api/${storeName}/${id}`, {
           method: 'DELETE',
@@ -297,8 +301,8 @@ export class DBService {
       return;
     }
     
-    // 1. Limpiar Backend primero si hay token
-    if (this.token) {
+    // 1. Limpiar Backend primero si hay token y no es modo local
+    if (!this.isLocalMode()) {
       try {
         console.log("📡 Reseteando backend...");
         const response = await fetch('/api/system/reset', { 

@@ -1,11 +1,21 @@
 
 import React, { useState } from 'react';
-import { User, Lock, Loader2, UserPlus, LogIn, ShieldCheck } from 'lucide-react';
+import { User, Lock, Loader2, UserPlus, LogIn, ShieldCheck, Smartphone } from 'lucide-react';
 import { User as UserType } from '../types';
+import { dbService } from '../db';
 
 interface AuthProps {
   onLogin: (user: UserType) => void;
 }
+
+const DEFAULT_ADMIN = {
+  id: 'local-admin-1',
+  username: 'admin',
+  password: 'admin123',
+  role: 'admin' as const,
+  name: 'Administrador',
+  permissions: ["dashboard","inventory","sales","purchases","customers","suppliers","manufacturing","cxc","cxp","expenses","reports","settings"]
+};
 
 export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [isLogin, setIsLogin] = useState(true);
@@ -19,6 +29,74 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     role: 'seller' as 'admin' | 'seller'
   });
 
+  const handleLocalAuth = () => {
+    try {
+      let localUsers: any[] = [];
+      const saved = localStorage.getItem('local_users');
+      if (saved) {
+        try {
+          localUsers = JSON.parse(saved);
+        } catch (e) {
+          localUsers = [];
+        }
+      }
+
+      // Si no hay ningún usuario local creado, incluimos el admin por defecto
+      if (localUsers.length === 0) {
+        localUsers = [DEFAULT_ADMIN];
+        localStorage.setItem('local_users', JSON.stringify(localUsers));
+      }
+
+      if (isLogin) {
+        const matched = localUsers.find(
+          u => u.username.toLowerCase() === formData.username.trim().toLowerCase() && u.password === formData.password
+        );
+
+        if (matched) {
+          const { password, ...safeUser } = matched;
+          const userWithToken: UserType = { ...safeUser, token: 'local-offline-token' };
+          localStorage.setItem('auth_token', 'local-offline-token');
+          localStorage.setItem('user_data', JSON.stringify(safeUser));
+          dbService.setToken('local-offline-token');
+          onLogin(userWithToken);
+          return true;
+        } else {
+          setError('Credenciales incorrectas (Modo local. Admin por defecto: admin / admin123)');
+          return false;
+        }
+      } else {
+        // Registro local
+        const exists = localUsers.some(
+          u => u.username.toLowerCase() === formData.username.trim().toLowerCase()
+        );
+        if (exists) {
+          setError('El nombre de usuario ya está registrado en este dispositivo');
+          return false;
+        }
+
+        const newUser = {
+          id: crypto.randomUUID(),
+          username: formData.username.trim(),
+          password: formData.password,
+          role: formData.role,
+          name: formData.name || formData.username,
+          permissions: formData.role === 'admin'
+            ? ["dashboard","inventory","sales","purchases","customers","suppliers","manufacturing","cxc","cxp","expenses","reports","settings"]
+            : ["inventory","sales","customers"]
+        };
+
+        localUsers.push(newUser);
+        localStorage.setItem('local_users', JSON.stringify(localUsers));
+        alert('Usuario registrado exitosamente en el dispositivo. Ahora puedes iniciar sesión.');
+        setIsLogin(true);
+        return true;
+      }
+    } catch (e: any) {
+      setError(e.message || 'Error en autenticación local');
+      return false;
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -26,8 +104,9 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
 
     const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
     
+    // Timeout corto de 2.5s para no hacer esperar al usuario si está en modo APK offline
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 segundos de timeout
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
 
     try {
       const response = await fetch(endpoint, {
@@ -50,22 +129,32 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           const userWithToken = { ...data.user, token: data.token };
           localStorage.setItem('auth_token', data.token);
           localStorage.setItem('user_data', JSON.stringify(data.user));
+          
+          // Guardar también una copia local para acceso offline futuro
+          try {
+            const saved = localStorage.getItem('local_users');
+            let localUsers = saved ? JSON.parse(saved) : [];
+            const idx = localUsers.findIndex((u: any) => u.username === data.user.username);
+            const toSave = { ...data.user, password: formData.password };
+            if (idx >= 0) localUsers[idx] = toSave;
+            else localUsers.push(toSave);
+            localStorage.setItem('local_users', JSON.stringify(localUsers));
+          } catch (e) {}
+
+          dbService.setToken(data.token);
           onLogin(userWithToken);
         } else {
           alert('Registro exitoso. Ahora puedes iniciar sesión.');
           setIsLogin(true);
         }
       } else {
-        const text = await response.text();
-        console.error("Respuesta no JSON del servidor:", text);
-        throw new Error(`Error del servidor (${response.status}). Verifique su conexión o intente de nuevo.`);
+        // Respuesta no válida del servidor, intentar localmente
+        handleLocalAuth();
       }
     } catch (err: any) {
-      if (err.name === 'AbortError') {
-        setError('El servidor está tardando demasiado en responder. Intente de nuevo.');
-      } else {
-        setError(err.message);
-      }
+      // Si el servidor no está encendido o falló la red (modo APK autónomo)
+      console.warn("Servidor no accesible, utilizando autenticación local:", err.message);
+      handleLocalAuth();
     } finally {
       setIsLoading(false);
     }
@@ -168,7 +257,23 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           </button>
         </form>
 
-        <div className="mt-8 pt-6 border-t border-slate-700/50 text-center">
+        {isLogin && (
+          <div className="mt-4 text-center">
+            <button
+              type="button"
+              onClick={() => {
+                setFormData({ username: 'admin', password: 'admin123', name: 'Administrador', role: 'admin' });
+                setTimeout(() => handleLocalAuth(), 50);
+              }}
+              className="inline-flex items-center gap-1.5 text-[9px] font-bold text-slate-400 hover:text-orange-400 uppercase tracking-wider transition-colors py-1 px-3 rounded-lg hover:bg-slate-800"
+            >
+              <Smartphone size={13} className="text-orange-500" />
+              Acceso Rápido Autónomo (admin / admin123)
+            </button>
+          </div>
+        )}
+
+        <div className="mt-6 pt-6 border-t border-slate-700/50 text-center">
           <button 
             onClick={() => setIsLogin(!isLogin)}
             className="text-[9px] font-black text-slate-500 hover:text-orange-500 uppercase tracking-widest transition-colors"

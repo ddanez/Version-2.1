@@ -1,0 +1,51 @@
+name: Compilar APK Android
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Generar APK de D'Danez Gestor Pro
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Compilar Frontend (dist)
+        run: npm run build
+
+      - name: Sincronizar proyecto Android con Capacitor
+        run: npx cap sync android
+
+      - name: Configurar Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Compilar archivo APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Publicar APK para descarga
+        uses: actions/upload-artifact@v4
+        with:
+          name: DDanez-GestorPro-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
