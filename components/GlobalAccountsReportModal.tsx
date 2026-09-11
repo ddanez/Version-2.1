@@ -1,9 +1,10 @@
 
 import React, { useRef, useState, useMemo } from 'react';
-import { X, Download, FileText, LayoutList, List, SortAsc, SortDesc, Type } from 'lucide-react';
+import { X, Download, FileText, LayoutList, List, SortAsc, SortDesc, Type, Share2 } from 'lucide-react';
 import { CompanyInfo, AppSettings, Sale, Purchase } from '../types';
 import * as htmlToImage from 'html-to-image';
 import { calculateBS } from '../utils';
+import { downloadOrShareFile } from '../downloadHelper';
 
 interface GroupedData {
   id: string;
@@ -61,7 +62,7 @@ export const GlobalAccountsReportModal: React.FC<Props> = ({
     
     try {
       // Pequeña pausa para asegurar que el DOM esté listo
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 300));
 
       const dataUrl = await htmlToImage.toPng(reportRef.current, {
         backgroundColor: '#fff',
@@ -70,19 +71,16 @@ export const GlobalAccountsReportModal: React.FC<Props> = ({
       });
 
       const fileName = `Reporte_General_${type.toUpperCase()}_${new Date().toISOString().split('T')[0]}.png`;
-      
-      const link = document.createElement('a');
-      link.style.display = 'none';
-      link.href = dataUrl;
-      link.download = fileName;
-      
-      document.body.appendChild(link);
-      link.click();
-      
-      setTimeout(() => {
-        document.body.removeChild(link);
-      }, 100);
+      const success = await downloadOrShareFile({
+        fileName,
+        title: `${reportTitle} - ${new Date().toLocaleDateString()}`,
+        dataUrl,
+        mimeType: 'image/png'
+      });
 
+      if (!success) {
+        alert('No se pudo guardar la imagen automáticamente. Intente tomar una captura de pantalla.');
+      }
     } catch (err) {
       console.error('Error al generar imagen:', err);
       alert('No se pudo generar la imagen. Intente de nuevo.');
@@ -237,7 +235,7 @@ export const GlobalAccountsReportModal: React.FC<Props> = ({
              disabled={isGenerating}
              className="w-full bg-orange-600 hover:bg-orange-700 text-white py-4 rounded-2xl font-black text-[12px] uppercase tracking-widest shadow-xl flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50"
            >
-              {isGenerating ? 'Generando...' : <><Download size={20} /> Descargar Reporte como Imagen</>}
+              {isGenerating ? 'Generando...' : <><Share2 size={20} /> Guardar o Compartir Reporte</>}
            </button>
            
            <button onClick={onClose} className="w-full bg-slate-200 text-slate-700 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest font-sans">

@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   LayoutDashboard, Package, ShoppingCart, Tag, Users, Truck, 
   HandCoins, Wallet, BarChart3, Settings as SettingsIcon, Menu, X, UserCheck, Camera, ChefHat
@@ -69,12 +69,12 @@ const App: React.FC = () => {
       if (isDataLoaded || !user) {
         setShowSplash(false);
       }
-    }, 2000); // Mínimo 2 segundos de splash para que se vea bien
+    }, 400); // Carga rápida y fluida (400ms)
 
-    // Timeout de seguridad: desaparecer tras 10 segundos pase lo que pase
+    // Timeout de seguridad: desaparecer tras 3 segundos pase lo que pase
     const safetyTimer = setTimeout(() => {
       setShowSplash(false);
-    }, 10000);
+    }, 3000);
 
     return () => {
       clearTimeout(timer);
@@ -266,13 +266,11 @@ const App: React.FC = () => {
     // Escuchar cuando la app vuelve a primer plano
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        // Al volver a primer plano, nos aseguramos de que el historial esté correcto
         window.history.pushState(null, "", window.location.pathname);
         localStorage.setItem('last_active_time', Date.now().toString());
-        // Solo refrescar si han pasado más de 3 minutos de inactividad
+        // Solo refrescar si han pasado más de 10 minutos de inactividad
         const elapsed = Date.now() - lastDataLoadRef.current;
-        if (elapsed > 180000) {
-          console.log("App en primer plano - Sincronizando datos");
+        if (elapsed > 600000) {
           loadData();
         }
       }
@@ -344,6 +342,9 @@ const App: React.FC = () => {
     }
   };
 
+  const cxcPendingItems = useMemo(() => sales.filter(s => s.status === 'pending'), [sales]);
+  const cxpPendingItems = useMemo(() => purchases.filter(p => p.status === 'pending'), [purchases]);
+
   if (!user) return <Auth onLogin={setUser} />;
 
   if (showSplash) return <Splash company={company} />;
@@ -372,7 +373,12 @@ const App: React.FC = () => {
       )}
 
       <div className="md:hidden flex items-center justify-between p-4 bg-[#1e293b] border-b border-slate-700 sticky top-0 z-50 h-14">
-        <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 text-slate-300">
+        <button 
+          type="button"
+          onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
+          className="p-2.5 text-slate-200 active:scale-90 transition-transform touch-manipulation focus:outline-none"
+          aria-label="Menú principal"
+        >
           {isSidebarOpen ? <X size={24} /> : <Menu size={24} />}
         </button>
         <span className="font-black text-[10px] truncate uppercase tracking-widest text-orange-500">{currentTabLabel}</span>
@@ -390,8 +396,9 @@ const App: React.FC = () => {
           {filteredNavItems.map((item) => (
             <button
               key={item.id}
+              type="button"
               onClick={() => { setActiveTab(item.id); setIsSidebarOpen(false); }}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === item.id ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all touch-manipulation active:scale-[0.98] ${activeTab === item.id ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
             >
               <item.icon size={18} />
               <span>{item.label}</span>
@@ -410,15 +417,16 @@ const App: React.FC = () => {
             </div>
           </div>
           <button 
+            type="button"
             onClick={handleLogout}
-            className="w-full py-3 bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+            className="w-full py-3 bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 touch-manipulation active:scale-95"
           >
             <X size={14} /> Salir del Sistema
           </button>
         </div>
       </aside>
 
-      {isSidebarOpen && <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden" onClick={() => setIsSidebarOpen(false)} />}
+      {isSidebarOpen && <div className="fixed inset-0 bg-black/60 z-40 md:hidden" onClick={() => setIsSidebarOpen(false)} />}
 
       <main className="flex-1 overflow-y-auto bg-[#0f172a]">
         <div className="max-w-6xl mx-auto p-4 md:p-8 pb-24 md:pb-8">
@@ -431,8 +439,8 @@ const App: React.FC = () => {
           {activeTab === AppTab.SUPPLIERS && <Contacts type="suppliers" items={suppliers} setItems={setSuppliers} relatedData={purchases} payments={payments} settings={settings} />}
           { activeTab === AppTab.MANUFACTURING && <Manufacturing settings={settings} /> }
           { activeTab === AppTab.PROMOTIONS && <Promotions settings={settings} company={company} customers={customers} products={products} setProducts={setProducts} /> }
-          {activeTab === AppTab.CXC && <Accounts type="cxc" items={sales.filter(s => s.status === 'pending')} settings={settings} company={company} onUpdate={loadData} customers={customers} suppliers={suppliers} />}
-          {activeTab === AppTab.CXP && <Accounts type="cxp" items={purchases.filter(p => p.status === 'pending')} settings={settings} company={company} onUpdate={loadData} customers={customers} suppliers={suppliers} />}
+          {activeTab === AppTab.CXC && <Accounts type="cxc" items={cxcPendingItems} settings={settings} company={company} onUpdate={loadData} customers={customers} suppliers={suppliers} />}
+          {activeTab === AppTab.CXP && <Accounts type="cxp" items={cxpPendingItems} settings={settings} company={company} onUpdate={loadData} customers={customers} suppliers={suppliers} />}
           {activeTab === AppTab.REPORTS && <Reports sales={sales} purchases={purchases} expenses={expenses} products={products} customers={customers} suppliers={suppliers} settings={settings} movements={movements} promotions={promotions} customerPromotions={customerPromotions} />}
           {activeTab === AppTab.SETTINGS && <Settings company={company} setCompany={setCompany} settings={settings} setSettings={setSettings} user={user} />}
         </div>

@@ -1,22 +1,53 @@
-// db.ts - Implementación con Backend API y Fallback a IndexedDB
+// db.ts - Implementación Ultra-Rápida con Soporte Nativo para APK y Termux
+import { Capacitor } from '@capacitor/core';
+
 const DB_NAME = 'GestorProDB';
 const DB_VERSION = 9;
-const STORES = ['products', 'customers', 'suppliers', 'sales', 'purchases', 'settings', 'sellers', 'payments', 'authenticators', 'expenses', 'movements', 'ingredients', 'recipes', 'promotions', 'customer_promotions', 'users'];
+const STORES = [
+  'products', 'customers', 'suppliers', 'sales', 'purchases', 
+  'settings', 'sellers', 'payments', 'authenticators', 'expenses', 
+  'movements', 'ingredients', 'recipes', 'promotions', 'customer_promotions', 'users'
+];
 
 export class DBService {
   private db: IDBDatabase | null = null;
   private token: string | null = null;
   private onSessionExpired: (() => void) | null = null;
+  private isHandlingSessionExpired = false;
+
+  // Control de conectividad con el servidor backend
+  private isServerOnline: boolean = false;
+  private serverChecked: boolean = false;
+  private lastCheckTime: number = 0;
 
   setToken(token: string | null) {
     this.token = token;
+    // Si el token cambia, invalidar caché de conexión
+    this.serverChecked = false;
   }
 
   isLocalMode(): boolean {
     return !this.token || this.token === 'local-offline-token';
   }
 
-  private isHandlingSessionExpired = false;
+  getBaseUrl(): string {
+    if (typeof window !== 'undefined') {
+      const isNative = Capacitor.isNativePlatform() || window.location.protocol === 'capacitor:';
+      if (isNative) {
+        // Si hay una URL personalizada configurada, usarla; de lo contrario apuntar al loopback de Termux
+        const savedUrl = localStorage.getItem('api_server_url');
+        return savedUrl ? savedUrl.replace(/\/$/, '') : 'http://127.0.0.1:3000';
+      }
+    }
+    return '';
+  }
+
+  private getHeaders() {
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${this.token}`
+    };
+  }
 
   setOnSessionExpired(callback: () => void) {
     this.onSessionExpired = callback;
@@ -33,22 +64,49 @@ export class DBService {
     }, 3000);
   }
 
-  private getHeaders() {
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${this.token}`
-    };
+  /**
+   * Comprobación ultra-rápida de salud del servidor (máximo 400ms).
+   * Si el servidor no responde de inmediato, la app continúa 100% en modo local sin demoras.
+   */
+  async checkServerConnection(force = false): Promise<boolean> {
+    if (this.isLocalMode()) {
+      this.isServerOnline = false;
+      return false;
+    }
+
+    const now = Date.now();
+    if (!force && this.serverChecked && (now - this.lastCheckTime < 25000)) {
+      return this.isServerOnline;
+    }
+
+    this.lastCheckTime = now;
+    this.serverChecked = true;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 400); // 400ms límite estricto
+
+      const res = await fetch(`${this.getBaseUrl()}/api/health`, {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      this.isServerOnline = res.ok;
+      return res.ok;
+    } catch {
+      this.isServerOnline = false;
+      return false;
+    }
   }
 
   async init(): Promise<void> {
     if (this.db) return;
 
     return new Promise((resolve, reject) => {
-      // Timeout de seguridad para la inicialización de DB
       const timeout = setTimeout(() => {
-        console.warn("⚠️ IndexedDB tardando demasiado en responder...");
-        resolve(); // Resolvemos de todos modos para no bloquear la app
-      }, 5000);
+        console.warn("⚠️ IndexedDB tardando en responder...");
+        resolve();
+      }, 3000);
 
       const request = indexedDB.open(DB_NAME, DB_VERSION);
 
@@ -64,7 +122,6 @@ export class DBService {
       request.onsuccess = (event) => {
         clearTimeout(timeout);
         this.db = (event.target as IDBOpenDBRequest).result;
-        console.log("🗄️ IndexedDB inicializada correctamente");
         resolve();
       };
 
@@ -83,18 +140,50 @@ export class DBService {
     return transaction.objectStore(storeName);
   }
 
-  // Carga instantánea de todas las entidades en 1 sola llamada HTTP
+  /**
+   * Obtiene datos exclusivamente de la base de datos local (IndexedDB) en milisegundos.
+   */
+  async getLocal<T>(storeName: string): Promise<T[]> {
+    return new Promise<T[]>(async (resolve) => {
+      try {
+        const store = await this.getStore(storeName, 'readonly');
+        const request = store.getAll();
+        request.onsuccess = () => resolve((request.result as T[]) || []);
+        request.onerror = () => resolve([]);
+      } catch (e) {
+        resolve([]);
+      }
+    });
+  }
+
+  /**
+   * Carga instantánea de bootstrap si el servidor está online.
+   * Si está offline o en modo APK autónomo, retorna null de inmediato (0ms) sin bloquear.
+   */
   async bootstrap(): Promise<Record<string, any[]> | null> {
     if (this.isLocalMode()) return null;
+
+    const isOnline = await this.checkServerConnection();
+    if (!isOnline) return null;
+
     try {
-      const response = await fetch('/api/bootstrap', { headers: this.getHeaders() });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1200);
+
+      const response = await fetch(`${this.getBaseUrl()}/api/bootstrap`, { 
+        headers: this.getHeaders(),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
       if (response.status === 401 || response.status === 403) {
         this.handleSessionExpired();
         throw new Error("SESSION_EXPIRED");
       }
+
       if (response.ok) {
         const data = await response.json();
-        // Sincronizar con IndexedDB en segundo plano sin congelar la interfaz
+        // Guardar en IndexedDB en segundo plano sin congelar la UI
         setTimeout(async () => {
           try {
             await this.init();
@@ -106,67 +195,97 @@ export class DBService {
                 items.forEach(item => store.put(item));
               }
             });
-          } catch (e) {
-            // No bloqueante
-          }
-        }, 50);
+          } catch (e) {}
+        }, 10);
         return data;
       }
     } catch (err: any) {
       if (err.message === "SESSION_EXPIRED") throw err;
-      console.warn("Error en bootstrap, recurriendo a carga local:", err);
+      this.isServerOnline = false;
     }
     return null;
   }
 
+  /**
+   * Obtiene todos los registros.
+   * En modo local o cuando el servidor está inaccesible, responde al instante desde IndexedDB.
+   */
   async getAll<T>(storeName: string): Promise<T[]> {
-    // Si tenemos token y no es local, hacemos la petición directa para máxima velocidad
-    if (!this.isLocalMode()) {
-      try {
-        const response = await fetch(`/api/${storeName}`, { headers: this.getHeaders() });
-        if (response.status === 401 || response.status === 403) {
-          this.handleSessionExpired();
-          throw new Error("SESSION_EXPIRED");
-        }
-        if (response.ok) {
-          const contentType = response.headers.get("content-type");
-          if (contentType && contentType.indexOf("application/json") !== -1) {
-            const data = await response.json();
-            // Sincronizar en segundo plano
-            setTimeout(async () => {
-              try {
-                if (data && data.length > 0) {
-                  const store = await this.getStore(storeName, 'readwrite');
-                  data.forEach((item: any) => store.put(item));
-                }
-              } catch (e) {}
-            }, 10);
-            return data;
-          }
-        }
-      } catch (err: any) {
-        if (err.message === "SESSION_EXPIRED") throw err;
-        console.warn(`Error al obtener ${storeName} del backend, usando local:`, err);
-      }
+    // 1. Si no hay conexión al servidor o es modo local, leer directamente de IndexedDB
+    if (this.isLocalMode() || !this.isServerOnline) {
+      return this.getLocal<T>(storeName);
     }
 
-    // Fallback a IndexedDB si no hay conexión o falla el backend
-    return new Promise<T[]>(async (resolve) => {
-      try {
-        const store = await this.getStore(storeName, 'readonly');
-        const request = store.getAll();
-        request.onsuccess = () => resolve(request.result as T[]);
-        request.onerror = () => resolve([]);
-      } catch (e) {
-        resolve([]);
+    // 2. Si el servidor está activo, intentar petición con timeout estricto de 1.2s
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1200);
+
+      const response = await fetch(`${this.getBaseUrl()}/api/${storeName}`, { 
+        headers: this.getHeaders(),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (response.status === 401 || response.status === 403) {
+        this.handleSessionExpired();
+        throw new Error("SESSION_EXPIRED");
       }
-    });
+
+      if (response.ok) {
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.indexOf("application/json") !== -1) {
+          const data = await response.json();
+          // Sincronizar con IndexedDB en segundo plano
+          setTimeout(async () => {
+            try {
+              if (Array.isArray(data) && data.length > 0) {
+                const store = await this.getStore(storeName, 'readwrite');
+                data.forEach((item: any) => store.put(item));
+              }
+            } catch (e) {}
+          }, 10);
+          return data;
+        }
+      }
+    } catch (err: any) {
+      if (err.message === "SESSION_EXPIRED") throw err;
+      this.isServerOnline = false;
+    }
+
+    // 3. Fallback instantáneo a IndexedDB
+    return this.getLocal<T>(storeName);
+  }
+
+  async put<T extends { id?: string }>(storeName: string, item: T): Promise<void> {
+    // 1. Guardar localmente primero SIEMPRE (inmediato, < 1ms)
+    try {
+      const store = await this.getStore(storeName, 'readwrite');
+      await new Promise<void>((resolve, reject) => {
+        const request = store.put(item);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+    } catch (e) {
+      console.warn(`Error guardando localmente en ${storeName}:`, e);
+    }
+
+    // 2. Sincronizar en segundo plano si el servidor está online
+    if (!this.isLocalMode() && this.isServerOnline) {
+      fetch(`${this.getBaseUrl()}/api/${storeName}`, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(item)
+      }).catch(() => {
+        // En segundo plano, no bloquea
+      });
+    }
   }
 
   async putMany<T extends { id?: string }>(storeName: string, items: T[]): Promise<void> {
     if (!items || items.length === 0) return;
 
-    // Guardar en IndexedDB localmente
+    // Guardar en IndexedDB localmente de forma atómica
     try {
       await this.init();
       if (this.db && this.db.objectStoreNames.contains(storeName)) {
@@ -177,25 +296,16 @@ export class DBService {
         }
       }
     } catch (e) {
-      console.warn(`Error guardando localmente en ${storeName}:`, e);
+      console.warn(`Error guardando lote en ${storeName}:`, e);
     }
 
-    // Enviar en lote al backend
-    if (!this.isLocalMode()) {
-      try {
-        const response = await fetch(`/api/${storeName}/bulk`, {
-          method: 'POST',
-          headers: this.getHeaders(),
-          body: JSON.stringify(items)
-        });
-        if (response.status === 401 || response.status === 403) {
-          this.handleSessionExpired();
-          throw new Error("SESSION_EXPIRED");
-        }
-      } catch (err: any) {
-        if (err.message === "SESSION_EXPIRED") throw err;
-        console.warn(`Error al guardar lote en ${storeName}:`, err);
-      }
+    // Sincronizar en segundo plano si hay servidor
+    if (!this.isLocalMode() && this.isServerOnline) {
+      fetch(`${this.getBaseUrl()}/api/${storeName}/bulk`, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(items)
+      }).catch(() => {});
     }
   }
 
@@ -218,132 +328,58 @@ export class DBService {
       console.warn("Error guardando lote local:", e);
     }
 
-    // Enviar al backend en 1 sola llamada
-    if (!this.isLocalMode()) {
-      try {
-        const response = await fetch('/api/batch', {
-          method: 'POST',
-          headers: this.getHeaders(),
-          body: JSON.stringify(operations)
-        });
-        if (response.status === 401 || response.status === 403) {
-          this.handleSessionExpired();
-          throw new Error("SESSION_EXPIRED");
-        }
-      } catch (err: any) {
-        if (err.message === "SESSION_EXPIRED") throw err;
-        console.warn("Error en /api/batch:", err);
-      }
-    }
-  }
-
-  async put<T>(storeName: string, item: T): Promise<void> {
-    // Guardar localmente primero
-    const store = await this.getStore(storeName, 'readwrite');
-    await new Promise<void>((resolve, reject) => {
-      const request = store.put(item);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
-
-    // Intentar guardar en el backend
-    if (!this.isLocalMode()) {
-      try {
-        const response = await fetch(`/api/${storeName}`, {
-          method: 'POST',
-          headers: this.getHeaders(),
-          body: JSON.stringify(item)
-        });
-        
-        if (response.status === 401 || response.status === 403) {
-          this.handleSessionExpired();
-          throw new Error("SESSION_EXPIRED");
-        }
-      } catch (err: any) {
-        if (err.message === "SESSION_EXPIRED") throw err;
-        console.warn(`Error al guardar ${storeName} en el backend:`, err);
-      }
+    // Enviar en segundo plano al backend
+    if (!this.isLocalMode() && this.isServerOnline) {
+      fetch(`${this.getBaseUrl()}/api/batch`, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(operations)
+      }).catch(() => {});
     }
   }
 
   async delete(storeName: string, id: string): Promise<void> {
-    // Eliminar localmente
-    const store = await this.getStore(storeName, 'readwrite');
-    await new Promise<void>((resolve, reject) => {
-      const request = store.delete(id);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
+    // Eliminar localmente primero
+    try {
+      const store = await this.getStore(storeName, 'readwrite');
+      await new Promise<void>((resolve, reject) => {
+        const request = store.delete(id);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+    } catch (e) {
+      console.warn(`Error eliminando localmente de ${storeName}:`, e);
+    }
 
-    // Intentar eliminar en el backend
-    if (!this.isLocalMode()) {
-      try {
-        const response = await fetch(`/api/${storeName}/${id}`, {
-          method: 'DELETE',
-          headers: this.getHeaders()
-        });
-        if (response.status === 401 || response.status === 403) {
-          this.handleSessionExpired();
-          throw new Error("SESSION_EXPIRED");
-        }
-      } catch (err: any) {
-        if (err.message === "SESSION_EXPIRED") throw err;
-        console.warn(`Error al eliminar ${storeName} en el backend:`, err);
-      }
+    // Sincronizar eliminación en segundo plano
+    if (!this.isLocalMode() && this.isServerOnline) {
+      fetch(`${this.getBaseUrl()}/api/${storeName}/${id}`, {
+        method: 'DELETE',
+        headers: this.getHeaders()
+      }).catch(() => {});
     }
   }
 
   async clearAllData(): Promise<void> {
-    console.log("🧹 Iniciando limpieza total de datos...");
     await this.init();
-    if (!this.db) {
-      console.error("❌ No se pudo limpiar: IndexedDB no inicializada");
-      return;
-    }
-    
-    // 1. Limpiar Backend primero si hay token y no es modo local
-    if (!this.isLocalMode()) {
-      try {
-        console.log("📡 Reseteando backend...");
-        const response = await fetch('/api/system/reset', { 
-          method: 'POST', 
-          headers: this.getHeaders() 
-        });
-        if (!response.ok) {
-          const contentType = response.headers.get("content-type");
-          if (contentType && contentType.indexOf("application/json") !== -1) {
-            const errorData = await response.json();
-            console.warn("⚠️ El backend devolvió error al resetear:", errorData.message);
-          } else {
-            const text = await response.text();
-            console.warn("⚠️ El backend devolvió una respuesta no JSON:", text);
-          }
-        } else {
-          console.log("✅ Backend reseteado correctamente");
-        }
-      } catch (err) {
-        console.error("❌ Error de red al resetear backend:", err);
-      }
+    if (!this.db) return;
+
+    if (!this.isLocalMode() && this.isServerOnline) {
+      fetch(`${this.getBaseUrl()}/api/system/reset`, { 
+        method: 'POST', 
+        headers: this.getHeaders() 
+      }).catch(() => {});
     }
 
-    // 2. Limpiar IndexedDB
     return new Promise((resolve, reject) => {
       try {
         const transaction = this.db!.transaction(STORES, 'readwrite');
         STORES.forEach(storeName => {
           transaction.objectStore(storeName).clear();
         });
-
-        transaction.oncomplete = () => {
-          console.log("✅ IndexedDB limpiada correctamente");
-          resolve();
-        };
-        transaction.onerror = () => {
-          console.error("❌ Error en transacción de IndexedDB:", transaction.error);
-          reject(transaction.error);
-        };
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
       } catch (err) {
-        console.error("❌ Error al crear transacción de limpieza:", err);
         reject(err);
       }
     });
@@ -352,7 +388,7 @@ export class DBService {
   async exportBackup(): Promise<string> {
     const backup: Record<string, any[]> = {};
     for (const storeName of STORES) {
-      backup[storeName] = await this.getAll(storeName);
+      backup[storeName] = await this.getLocal(storeName);
     }
     return JSON.stringify(backup);
   }
@@ -362,46 +398,9 @@ export class DBService {
     await this.init();
     if (!this.db) throw new Error("Base de datos no inicializada");
 
-    // Normalizar compatibilidad si hay registros de clientes en promociones
-    if (Array.isArray(data.promotions)) {
-      if (!Array.isArray(data.customer_promotions)) {
-        data.customer_promotions = [];
-      }
-      const cleanPromos: any[] = [];
-      for (const item of data.promotions) {
-        if (item && item.customerId && item.promotionId) {
-          data.customer_promotions.push(item);
-        } else {
-          cleanPromos.push(item);
-        }
-      }
-      data.promotions = cleanPromos;
-
-      // Si hay progreso de clientes asociado a promociones que no tienen cabecera de campaña,
-      // generamos automáticamente la campaña para no perder la visibilidad
-      const promoIdsInPromos = new Set(cleanPromos.map(p => p.id));
-      for (const cp of data.customer_promotions) {
-        if (cp && cp.promotionId && !promoIdsInPromos.has(cp.promotionId)) {
-          cleanPromos.push({
-            id: cp.promotionId,
-            name: 'Promoción Recuperada',
-            description: 'Restaurada automáticamente desde el progreso de clientes del respaldo',
-            type: 'docena_13',
-            enrollmentType: 'manual',
-            requiredQuantity: 12,
-            rewardQuantity: 1,
-            isActive: true,
-            excludedPromotionIds: []
-          });
-          promoIdsInPromos.add(cp.promotionId);
-        }
-      }
-    }
-    
     for (const storeName of STORES) {
       if (Array.isArray(data[storeName])) {
-        // Garantizar que la transacción de IndexedDB se complete de forma atómica
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((resolve) => {
           try {
             const transaction = this.db!.transaction(storeName, 'readwrite');
             const store = transaction.objectStore(storeName);
@@ -410,30 +409,11 @@ export class DBService {
               store.put(item);
             }
             transaction.oncomplete = () => resolve();
-            transaction.onerror = () => reject(transaction.error);
-            transaction.onabort = () => reject(new Error(`Transacción abortada para ${storeName}`));
+            transaction.onerror = () => resolve();
           } catch (err) {
-            console.error(`Error restaurando tabla ${storeName}:`, err);
             resolve();
           }
         });
-
-        // Sincronizar en el servidor si hay sesión activa
-        if (this.token && data[storeName].length > 0) {
-          try {
-            await Promise.all(
-              data[storeName].map((item: any) =>
-                fetch(`/api/${storeName}`, {
-                  method: 'POST',
-                  headers: this.getHeaders(),
-                  body: JSON.stringify(item)
-                }).catch(e => console.error(`Error sincronizando backup de ${storeName}:`, e))
-              )
-            );
-          } catch (err) {
-            console.error(`Error en sincronización remota de ${storeName}:`, err);
-          }
-        }
       }
     }
   }

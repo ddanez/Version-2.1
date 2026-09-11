@@ -1,8 +1,10 @@
 
 import React, { useRef, useState, useMemo } from 'react';
-import { X, Printer, Download, CheckCircle2 } from 'lucide-react';
+import { X, Printer, Download, CheckCircle2, Share2 } from 'lucide-react';
 import { CompanyInfo, AppSettings, Sale, Purchase } from '../types';
 import * as htmlToImage from 'html-to-image';
+import { downloadOrShareFile } from '../downloadHelper';
+import { Capacitor } from '@capacitor/core';
 
 interface Props {
   isOpen: boolean;
@@ -43,7 +45,11 @@ export const TicketModal: React.FC<Props> = ({ isOpen, onClose, data, company, s
   const saldoDeudor = isOnlyAbono ? 0 : Math.max(0, totalOperacion - abonosRecibidos);
 
   const handlePrint = () => {
-    window.print();
+    if (Capacitor.isNativePlatform()) {
+      handleDownloadImage();
+    } else {
+      window.print();
+    }
   };
 
   const handleDownloadImage = async () => {
@@ -59,11 +65,17 @@ export const TicketModal: React.FC<Props> = ({ isOpen, onClose, data, company, s
       });
 
       const fileName = isPurchase ? 'Compra' : 'Venta';
-      const link = document.createElement('a');
-      link.download = `Ticket_${fileName}_${(data.id || '0000').slice(0,6).toUpperCase()}.png`;
-      link.href = dataUrl;
-      link.click();
-      
+      const fileFullName = `Ticket_${fileName}_${(data.id || '0000').slice(0,6).toUpperCase()}.png`;
+      const success = await downloadOrShareFile({
+        fileName: fileFullName,
+        title: `Ticket de ${fileName} - ${entityName}`,
+        dataUrl,
+        mimeType: 'image/png'
+      });
+
+      if (!success) {
+        alert('No se pudo guardar la imagen automáticamente. Intente tomar una captura de pantalla.');
+      }
     } catch (err) {
       console.error('Error al generar imagen:', err);
       try {
@@ -72,10 +84,14 @@ export const TicketModal: React.FC<Props> = ({ isOpen, onClose, data, company, s
            pixelRatio: 2,
            skipFonts: true
         });
-        const link = document.createElement('a');
-        link.download = `Ticket_${(data.id || '0000').slice(0,6).toUpperCase()}.png`;
-        link.href = fallbackUrl;
-        link.click();
+        const fileName = isPurchase ? 'Compra' : 'Venta';
+        const fileFullName = `Ticket_${fileName}_${(data.id || '0000').slice(0,6).toUpperCase()}.png`;
+        await downloadOrShareFile({
+          fileName: fileFullName,
+          title: `Ticket de ${fileName} - ${entityName}`,
+          dataUrl: fallbackUrl,
+          mimeType: 'image/png'
+        });
       } catch (secondErr) {
         alert('No se pudo generar la imagen. Intente tomar una captura de pantalla.');
       }
@@ -255,7 +271,7 @@ export const TicketModal: React.FC<Props> = ({ isOpen, onClose, data, company, s
              disabled={isGenerating}
              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-2xl font-black text-[12px] uppercase tracking-widest shadow-xl flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50"
            >
-              {isGenerating ? 'Generando...' : <><Download size={20} /> Guardar Ticket</>}
+              {isGenerating ? 'Generando...' : <><Share2 size={20} /> Guardar o Compartir Ticket</>}
            </button>
            
            <div className="flex gap-3">

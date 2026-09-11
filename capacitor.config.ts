@@ -5,7 +5,8 @@ const config: CapacitorConfig = {
   appName: "D'Danez Gestor Pro",
   webDir: 'dist',
   server: {
-    androidScheme: 'https'
+    androidScheme: 'https',
+    cleartext: true
   }
 };
 

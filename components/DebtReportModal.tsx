@@ -1,9 +1,11 @@
 
 import React, { useRef, useState } from 'react';
-import { X, Printer, Download, FileText } from 'lucide-react';
+import { X, Printer, Download, FileText, Share2 } from 'lucide-react';
 import { CompanyInfo, AppSettings, Sale, Purchase } from '../types';
 import * as htmlToImage from 'html-to-image';
 import { calculateBS } from '../utils';
+import { downloadOrShareFile } from '../downloadHelper';
+import { Capacitor } from '@capacitor/core';
 
 interface Props {
   isOpen: boolean;
@@ -26,7 +28,12 @@ export const DebtReportModal: React.FC<Props> = ({
   if (!isOpen) return null;
 
   const handlePrint = () => {
-    window.print();
+    if (Capacitor.isNativePlatform()) {
+      // En APK nativo, compartir la imagen permite enviar directamente a imprimir o guardar
+      handleDownloadImage();
+    } else {
+      window.print();
+    }
   };
 
   const handleDownloadImage = async () => {
@@ -40,10 +47,17 @@ export const DebtReportModal: React.FC<Props> = ({
         cacheBust: true,
       });
 
-      const link = document.createElement('a');
-      link.download = `Estado_Cuenta_${entityName.replace(/\s+/g, '_')}.png`;
-      link.href = dataUrl;
-      link.click();
+      const fileName = `Estado_Cuenta_${entityName.replace(/\s+/g, '_')}.png`;
+      const success = await downloadOrShareFile({
+        fileName,
+        title: `${reportTitle} - ${entityName}`,
+        dataUrl,
+        mimeType: 'image/png'
+      });
+
+      if (!success) {
+        alert('No se pudo guardar la imagen automáticamente. Intente tomar una captura de pantalla.');
+      }
     } catch (err) {
       console.error('Error al generar imagen:', err);
       alert('No se pudo generar la imagen.');
@@ -182,7 +196,7 @@ export const DebtReportModal: React.FC<Props> = ({
              disabled={isGenerating}
              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-2xl font-black text-[12px] uppercase tracking-widest shadow-xl flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50"
            >
-              {isGenerating ? 'Generando...' : <><Download size={20} /> Guardar Imagen</>}
+              {isGenerating ? 'Generando...' : <><Share2 size={20} /> Guardar o Compartir Imagen</>}
            </button>
            
            <div className="flex gap-3">
