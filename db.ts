@@ -386,17 +386,51 @@ export class DBService {
   }
 
   async exportBackup(): Promise<string> {
+    await this.init();
     const backup: Record<string, any[]> = {};
     for (const storeName of STORES) {
-      backup[storeName] = await this.getLocal(storeName);
+      let items = await this.getLocal(storeName);
+      // Si local está vacío pero estamos conectados a un servidor backend (Termux), obtener del servidor
+      if ((!items || items.length === 0) && !this.isLocalMode() && this.isServerOnline) {
+        try {
+          items = await this.getAll(storeName);
+        } catch (e) {}
+      }
+      backup[storeName] = items || [];
     }
-    return JSON.stringify(backup);
+    return JSON.stringify(backup, null, 2);
   }
 
-  async importBackup(jsonString: string): Promise<void> {
-    const data = JSON.parse(jsonString);
+  async getBackupSummary(): Promise<{ totalRecords: number; details: string }> {
+    await this.init();
+    let totalRecords = 0;
+    const parts: string[] = [];
+
+    for (const storeName of STORES) {
+      const items = await this.getLocal(storeName);
+      const count = items ? items.length : 0;
+      totalRecords += count;
+      if (count > 0) {
+        parts.push(`${count} ${storeName}`);
+      }
+    }
+    return {
+      totalRecords,
+      details: parts.slice(0, 4).join(', ') + (parts.length > 4 ? '...' : '')
+    };
+  }
+
+  async importBackup(jsonString: string): Promise<{ success: boolean; totalRestored: number }> {
+    const rawData = JSON.parse(jsonString);
     await this.init();
     if (!this.db) throw new Error("Base de datos no inicializada");
+
+    // Soportar tanto formato directo { products: [...] } como empaquetado { data: ... }
+    let data = rawData;
+    if (rawData && !rawData.products && rawData.data) data = rawData.data;
+    else if (rawData && !rawData.products && rawData.backup) data = rawData.backup;
+
+    let totalRestored = 0;
 
     for (const storeName of STORES) {
       if (Array.isArray(data[storeName])) {
@@ -407,6 +441,7 @@ export class DBService {
             store.clear();
             for (const item of data[storeName]) {
               store.put(item);
+              totalRestored++;
             }
             transaction.oncomplete = () => resolve();
             transaction.onerror = () => resolve();
@@ -414,8 +449,23 @@ export class DBService {
             resolve();
           }
         });
+
+        // Si el backend en Termux/Servidor está online, replicar los registros
+        if (!this.isLocalMode() && this.isServerOnline) {
+          for (const item of data[storeName]) {
+            if (item && item.id) {
+              fetch(`${this.getBaseUrl()}/api/${storeName}`, {
+                method: 'POST',
+                headers: this.getHeaders(),
+                body: JSON.stringify(item)
+              }).catch(() => {});
+            }
+          }
+        }
       }
     }
+
+    return { success: true, totalRestored };
   }
 }
 

@@ -37,6 +37,7 @@ import {
   BiometricStatus 
 } from '../biometricHelper';
 import { Capacitor } from '@capacitor/core';
+import { downloadOrShareFile } from '../downloadHelper';
 
 interface Props {
   company: CompanyInfo;
@@ -49,8 +50,9 @@ interface Props {
 const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings, user }) => {
   const [isResetting, setIsResetting] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
-  const [isPreparingBackup, setIsPreparingBackup] = useState(false);
-  const [preparedBackup, setPreparedBackup] = useState<{ data: string, fileName: string } | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isSharingCloud, setIsSharingCloud] = useState(false);
+  const [backupStatusMessage, setBackupStatusMessage] = useState<string | null>(null);
   const [passwordForm, setPasswordForm] = useState({ current: '', new: '', confirm: '' });
   const [biometricStatus, setBiometricStatus] = useState<BiometricStatus>({
     isAvailable: false,
@@ -175,115 +177,97 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
 
   const handleExport = async () => {
     try {
-      const backup = await dbService.exportBackup();
-      const blob = new Blob([backup], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Respaldo_${new Date().toISOString().split('T')[0]}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      alert("Error al exportar.");
+      setIsExporting(true);
+      setBackupStatusMessage("Generando archivo de respaldo...");
+      const backupJson = await dbService.exportBackup();
+      const summary = await dbService.getBackupSummary();
+      const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const fileName = `Respaldo_GestorPro_${dateStr}.json`;
+
+      const success = await downloadOrShareFile({
+        fileName,
+        title: 'Copia de Seguridad - Gestor Pro',
+        content: backupJson,
+        mimeType: 'application/json',
+        dialogTitle: 'Guardar Respaldo en su Dispositivo o Nube',
+        preferShare: false
+      });
+
+      if (success) {
+        setBackupStatusMessage(`✅ Respaldo generado con éxito (${summary.totalRecords} registros).`);
+        setTimeout(() => setBackupStatusMessage(null), 6000);
+      } else {
+        alert("No se pudo completar el guardado del archivo de respaldo.");
+        setBackupStatusMessage(null);
+      }
+    } catch (err: any) {
+      console.error("Error al exportar:", err);
+      alert("Error al generar el respaldo: " + (err.message || 'Error desconocido'));
+      setBackupStatusMessage(null);
+    } finally {
+      setIsExporting(false);
     }
   };
 
   const handleShareCloud = async () => {
-    // Si ya tenemos un respaldo preparado, lo compartimos directamente (gesto de usuario preservado)
-    if (preparedBackup) {
-      try {
-        if (navigator.share && window.isSecureContext) {
-          const file = new File([preparedBackup.data], preparedBackup.fileName, { type: 'application/json' });
-          if (navigator.canShare && navigator.canShare({ files: [file] })) {
-            await navigator.share({
-              files: [file],
-              title: 'Respaldo Gestor Pro',
-              text: 'Copia de seguridad de la base de datos'
-            });
-            setPreparedBackup(null);
-            return;
-          }
-        }
-      } catch (err: any) {
-        // Silenciamos errores esperados en el editor
-        const isPermissionError = err.name === 'NotAllowedError' || err.name === 'SecurityError' || err.message?.includes('permission');
-        if (isPermissionError) {
-           console.warn("Compartir bloqueado por el navegador/editor, usando descarga.");
-        } else if (err.name !== 'AbortError') {
-           console.error("Error al compartir:", err);
-        }
-      }
-      
-      // Fallback: Descarga tradicional
-      const blob = new Blob([preparedBackup.data], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = preparedBackup.fileName;
-      a.click();
-      URL.revokeObjectURL(url);
-      setPreparedBackup(null);
-      
-      // Mensaje amigable dependiendo del contexto
-      if (!window.isSecureContext || !navigator.share) {
-        alert("Respaldo descargado. Súbelo manualmente a la nube.");
-      } else {
-        alert("Debido a restricciones de seguridad del editor, el archivo se ha descargado directamente. Súbelo manualmente a Drive.\n\n(En tu instalación final por Termux, el menú de compartir se abrirá normalmente).");
-      }
-      return;
-    }
-
-    // Si no hay respaldo preparado, lo generamos
     try {
-      setIsPreparingBackup(true);
-      const backup = await dbService.exportBackup();
-      const fileName = `Respaldo_${new Date().toISOString().split('T')[0]}.json`;
-      
-      // Guardamos el respaldo preparado para el segundo clic (gesto de usuario)
-      setPreparedBackup({ data: backup, fileName });
-      setIsPreparingBackup(false);
-      
-      // Intentamos compartir de una vez por si el navegador lo permite (algunos permiten un pequeño delay)
-      try {
-        if (navigator.share && window.isSecureContext) {
-          const file = new File([backup], fileName, { type: 'application/json' });
-          if (navigator.canShare && navigator.canShare({ files: [file] })) {
-            await navigator.share({
-              files: [file],
-              title: 'Respaldo Gestor Pro',
-              text: 'Copia de seguridad de la base de datos'
-            });
-            setPreparedBackup(null);
-          }
+      setIsSharingCloud(true);
+      setBackupStatusMessage("Preparando para compartir en la nube...");
+      const backupJson = await dbService.exportBackup();
+      const summary = await dbService.getBackupSummary();
+      const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const fileName = `Respaldo_GestorPro_${dateStr}.json`;
+
+      const success = await downloadOrShareFile({
+        fileName,
+        title: 'Copia de Seguridad - Gestor Pro',
+        content: backupJson,
+        mimeType: 'application/json',
+        dialogTitle: 'Subir Respaldo a la Nube (Google Drive, WhatsApp, Gmail, etc.)',
+        preferShare: true
+      });
+
+      if (success) {
+        setBackupStatusMessage(`☁️ Respaldo preparado (${summary.totalRecords} registros). Elija su nube.`);
+        setTimeout(() => setBackupStatusMessage(null), 6000);
+      } else {
+        setBackupStatusMessage("Respaldo descargado para almacenamiento manual.");
+        const openDrive = confirm(`Respaldo generado y descargado (${summary.totalRecords} registros).\n\n¿Desea abrir Google Drive en una nueva pestaña para guardar su archivo?`);
+        if (openDrive) {
+          window.open('https://drive.google.com/drive/my-drive', '_blank');
         }
-      } catch (e) {
-        // Ignoramos el error del primer intento, el usuario verá el botón de "Compartir Ahora"
-        console.log("Primer intento de share falló (gesto de usuario), esperando segundo clic.");
       }
-    } catch (err) {
-      console.error("Error al preparar respaldo:", err);
-      alert("No se pudo generar el respaldo.");
-      setIsPreparingBackup(false);
+    } catch (err: any) {
+      console.error("Error al compartir en la nube:", err);
+      alert("Error al compartir el archivo de respaldo: " + (err.message || 'Error desconocido'));
+      setBackupStatusMessage(null);
+    } finally {
+      setIsSharingCloud(false);
     }
   };
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!confirm("Se sobrescribirán los datos. ¿Continuar?")) return;
+    if (!confirm("⚠️ Se sobrescribirán los datos locales con el archivo seleccionado. ¿Desea continuar con la restauración?")) {
+      e.target.value = '';
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
         const json = event.target?.result as string;
-        await dbService.importBackup(json);
-        alert("Restauración completa.");
+        const result = await dbService.importBackup(json);
+        alert(`✅ Restauración completa. Se recuperaron ${result.totalRestored} registros exitosamente.`);
         window.location.reload();
-      } catch (err) {
-        alert("Archivo inválido.");
+      } catch (err: any) {
+        console.error("Error en restauración:", err);
+        alert("Error: El archivo no contiene un formato de respaldo válido.");
       }
     };
     reader.readAsText(file);
+    e.target.value = '';
   };
 
   const handleRegisterBiometric = async () => {
@@ -854,22 +838,34 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
                <Database size={16} /> Mantenimiento de Datos
              </h2>
              <div className="grid grid-cols-2 gap-4">
-                <button type="button" onClick={handleExport} className="bg-slate-900 hover:bg-slate-800 text-slate-300 p-4 rounded-2xl border border-slate-700 flex flex-col items-center gap-2 transition-all active:scale-95 shadow-lg">
-                   <Download size={22} className="text-emerald-500" />
-                   <span className="text-[10px] font-black uppercase tracking-widest">Respaldar</span>
+                <button 
+                  type="button" 
+                  onClick={handleExport} 
+                  disabled={isExporting || isSharingCloud}
+                  className="bg-slate-900 hover:bg-slate-800 text-slate-300 p-4 rounded-2xl border border-slate-700 flex flex-col items-center gap-2 transition-all active:scale-95 shadow-lg disabled:opacity-50"
+                >
+                   {isExporting ? <Loader2 size={22} className="text-emerald-500 animate-spin" /> : <Download size={22} className="text-emerald-500" />}
+                   <span className="text-[10px] font-black uppercase tracking-widest">
+                     {isExporting ? 'Respaldando...' : 'Respaldar'}
+                   </span>
                 </button>
                 <button 
                   type="button" 
                   onClick={handleShareCloud} 
-                  disabled={isPreparingBackup}
-                  className={`p-4 rounded-2xl border flex flex-col items-center gap-2 transition-all active:scale-95 shadow-lg ${preparedBackup ? 'bg-indigo-600 border-indigo-400 text-white animate-pulse' : 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'}`}
+                  disabled={isExporting || isSharingCloud}
+                  className="bg-slate-900 hover:bg-slate-800 text-slate-300 p-4 rounded-2xl border border-slate-700 flex flex-col items-center gap-2 transition-all active:scale-95 shadow-lg disabled:opacity-50"
                 >
-                   {isPreparingBackup ? <Loader2 size={22} className="text-indigo-400 animate-spin" /> : <Share2 size={22} className={preparedBackup ? 'text-white' : 'text-indigo-400'} />}
+                   {isSharingCloud ? <Loader2 size={22} className="text-indigo-400 animate-spin" /> : <Cloud size={22} className="text-indigo-400" />}
                    <span className="text-[10px] font-black uppercase tracking-widest">
-                     {isPreparingBackup ? 'Generando...' : preparedBackup ? '¡Listo! Compartir' : 'Subir a Nube'}
+                     {isSharingCloud ? 'Conectando...' : 'Subir a Nube'}
                    </span>
                 </button>
              </div>
+             {backupStatusMessage && (
+               <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-xs font-semibold text-center">
+                 {backupStatusMessage}
+               </div>
+             )}
              <div className="grid grid-cols-1 gap-4">
                 <label className="bg-slate-900 hover:bg-slate-800 text-slate-300 p-4 rounded-2xl border border-slate-700 flex flex-col items-center gap-2 transition-all active:scale-95 shadow-lg cursor-pointer text-center">
                    <Upload size={22} className="text-orange-500 mx-auto" />

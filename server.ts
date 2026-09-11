@@ -24,6 +24,11 @@ const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key';
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+// Health check endpoint for platform and load balancers (MUST be first, unauthenticated)
+app.get(["/api/health", "/health"], (req, res) => {
+  res.json({ status: "ok", time: new Date().toISOString() });
+});
+
 // Middleware de Logging para ver peticiones en la consola de Termux
 app.use((req, res, next) => {
   if (req.url.startsWith('/api/')) {

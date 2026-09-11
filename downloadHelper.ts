@@ -1,13 +1,16 @@
 import { Capacitor } from '@capacitor/core';
-import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 
 export interface ExportFileOptions {
   fileName: string;
   title: string;
+  content?: string; // Contenido en texto plano (ej. JSON)
   dataUrl?: string; // base64 data: URL
   blob?: Blob;
   mimeType: string;
+  dialogTitle?: string;
+  preferShare?: boolean;
 }
 
 /**
@@ -42,72 +45,113 @@ export async function blobToBase64Data(blob: Blob): Promise<string> {
 }
 
 /**
- * Guarda o comparte un archivo (imagen, PDF, JSON, etc.) de forma compatible
+ * Guarda o comparte un archivo (imagen, PDF, JSON, etc.) de forma 100% compatible
  * tanto con navegadores web como con la app nativa APK Android.
  */
 export async function downloadOrShareFile(options: ExportFileOptions): Promise<boolean> {
-  const { fileName, title, dataUrl, blob: inputBlob, mimeType } = options;
+  const { fileName, title, content, dataUrl, mimeType, dialogTitle, preferShare } = options;
+  let blob = options.blob;
 
-  let blob = inputBlob;
+  // Si se envió texto plano y no hay blob, crearlo
+  if (content && !blob) {
+    blob = new Blob([content], { type: mimeType });
+  }
+
   let base64Pure = '';
-
   if (dataUrl) {
     if (!blob) {
       blob = dataUrlToBlob(dataUrl);
     }
     const parts = dataUrl.split(',');
     base64Pure = parts[1] || '';
-  } else if (blob) {
+  } else if (blob && !content) {
     base64Pure = await blobToBase64Data(blob);
   }
 
   const isNative = Capacitor.isNativePlatform();
 
-  // 1. Si estamos en APK nativo (Capacitor), usar Filesystem + Share de Capacitor
+  // 1. Si estamos en APK nativo (Capacitor Android)
   if (isNative) {
     try {
-      // Guardar temporalmente en el directorio de caché del dispositivo
-      const writeResult = await Filesystem.writeFile({
-        path: fileName,
-        data: base64Pure,
-        directory: Directory.Cache
-      });
+      let fileUri = '';
 
-      // Abrir el diálogo nativo de Android (Compartir en WhatsApp, Guardar en Descargas, etc.)
+      // Si es contenido de texto (JSON)
+      if (content) {
+        const writeResult = await Filesystem.writeFile({
+          path: fileName,
+          data: content,
+          directory: Directory.Cache,
+          encoding: Encoding.UTF8
+        });
+        fileUri = writeResult.uri;
+
+        // Intentar guardar también en Documentos para respaldo persistente
+        try {
+          await Filesystem.writeFile({
+            path: fileName,
+            data: content,
+            directory: Directory.Documents,
+            encoding: Encoding.UTF8
+          });
+        } catch (docErr) {
+          console.warn("No se pudo escribir en Documents, pero sí en Cache:", docErr);
+        }
+      } else {
+        // Si es binario / base64 (imágenes, PDF)
+        const writeResult = await Filesystem.writeFile({
+          path: fileName,
+          data: base64Pure,
+          directory: Directory.Cache
+        });
+        fileUri = writeResult.uri;
+      }
+
+      // Abrir el diálogo nativo de compartir de Android (Google Drive, WhatsApp, Guardar en archivos, etc.)
       await Share.share({
         title: title || fileName,
-        text: title,
-        url: writeResult.uri,
-        dialogTitle: `Guardar o Compartir ${fileName}`
+        text: title || 'Copia de seguridad',
+        files: [fileUri],
+        url: fileUri,
+        dialogTitle: dialogTitle || `Guardar o Compartir ${fileName}`
       });
 
       return true;
     } catch (err: any) {
       console.warn("Capacitor Filesystem/Share error, probando alternativas:", err);
+      // Si el usuario simplemente canceló el diálogo nativo de compartir, se considera éxito
+      if (err.message && (err.message.includes('canceled') || err.message.includes('dismissed'))) {
+        return true;
+      }
     }
   }
 
-  // 2. Si el navegador soporta Web Share API con archivos (Chrome Android, etc.)
-  if (blob && navigator.canShare && typeof File !== 'undefined') {
+  // 2. Si se solicitó compartir y el navegador soporta Web Share API con archivos
+  if (preferShare && blob && navigator.canShare && typeof File !== 'undefined') {
     try {
       const file = new File([blob], fileName, { type: mimeType });
       if (navigator.canShare({ files: [file] })) {
         await navigator.share({
           files: [file],
-          title: title || fileName
+          title: title || fileName,
+          text: title
         });
         return true;
       }
     } catch (err: any) {
-      // Si el usuario canceló el diálogo de compartir, no es un error real
       if (err.name === 'AbortError') return true;
-      console.warn("navigator.share error, intentando descarga directa:", err);
+      console.warn("navigator.share no pudo compartir archivos directamente:", err);
     }
   }
 
-  // 3. Método clásico de navegador web (enlace <a> con atributo download)
+  // 3. Método clásico de navegador web (descarga con <a download>)
   try {
-    const downloadUrl = dataUrl || (blob ? URL.createObjectURL(blob) : null);
+    let downloadUrl: string | null = null;
+    if (blob) {
+      downloadUrl = URL.createObjectURL(blob);
+    } else if (dataUrl) {
+      downloadUrl = dataUrl;
+    }
+
     if (!downloadUrl) return false;
 
     const link = document.createElement('a');
@@ -119,14 +163,14 @@ export async function downloadOrShareFile(options: ExportFileOptions): Promise<b
 
     setTimeout(() => {
       document.body.removeChild(link);
-      if (!dataUrl && downloadUrl.startsWith('blob:')) {
+      if (blob && downloadUrl) {
         URL.revokeObjectURL(downloadUrl);
       }
-    }, 500);
+    }, 1000);
 
     return true;
   } catch (err) {
-    console.error("Error al descargar archivo:", err);
+    console.error("Error al descargar archivo en navegador:", err);
     return false;
   }
 }
