@@ -2,11 +2,14 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   LayoutDashboard, Package, ShoppingCart, Tag, Users, Truck, 
-  HandCoins, Wallet, BarChart3, Settings as SettingsIcon, Menu, X, UserCheck, Camera, ChefHat, Fingerprint
+  HandCoins, Wallet, BarChart3, Settings as SettingsIcon, Menu, X, UserCheck, Camera, ChefHat, Fingerprint,
+  ArrowLeft
 } from 'lucide-react';
 import { AppTab, CompanyInfo, AppSettings, Product, Customer, Supplier, Sale, Purchase, Seller, User, Promotion, CustomerPromotion } from './types';
 import { dbService } from './db';
 import { isBiometricConfigured, authenticateWithBiometrics } from './biometricHelper';
+import { App as CapacitorApp } from '@capacitor/app';
+import { Capacitor } from '@capacitor/core';
 
 declare global {
   interface Window {
@@ -50,6 +53,9 @@ const App: React.FC = () => {
     const saved = localStorage.getItem('active_tab');
     return (saved as AppTab) || AppTab.DASHBOARD;
   });
+  const [tabHistory, setTabHistory] = useState<AppTab[]>([]);
+  const [exitNotice, setExitNotice] = useState<string | null>(null);
+  const exitNoticeTimerRef = useRef<any>(null);
   const [showSplash, setShowSplash] = useState<boolean>(() => {
     const savedToken = localStorage.getItem('auth_token');
     const splashShown = sessionStorage.getItem('splash_shown');
