@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Wallet, Plus, Trash2, Calendar, Tag, DollarSign, Search } from 'lucide-react';
 import { Expense, AppSettings } from '../types';
 import { dbService } from '../db';
@@ -14,6 +14,18 @@ interface Props {
 const Expenses: React.FC<Props> = ({ expenses, setExpenses, settings }) => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Manejar retroceso de modales con la flecha atrás de Android
+  useEffect(() => {
+    const handleBackButton = (e: Event) => {
+      if (showAddModal) {
+        e.preventDefault();
+        setShowAddModal(false);
+      }
+    };
+    window.addEventListener('app:backbutton', handleBackButton);
+    return () => window.removeEventListener('app:backbutton', handleBackButton);
+  }, [showAddModal]);
   const [newExpense, setNewExpense] = useState<Partial<Expense>>({
     date: new Date().toISOString().split('T')[0],
     category: 'General',

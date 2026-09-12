@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Plus, Search, Tag, UserPlus, ShoppingCart, Trash2, X, CheckCircle2, MessageCircle, UserPlus2, PackageSearch, CreditCard, Loader2, Edit2, AlertTriangle, Filter, Calendar, User as UserIcon, History, Wallet } from 'lucide-react';
 import { Sale, Customer, Product, AppSettings, SaleItem, CompanyInfo, Seller, Promotion, CustomerPromotion } from '../types';
 import { dbService } from '../db';
@@ -68,6 +68,45 @@ const Sales: React.FC<Props> = ({ sales, setSales, customers, setCustomers, prod
     const sub = cart.reduce((sum, item) => sum + ((item.quantity || 0) * (item.priceUSD || 0)), 0);
     return { subtotal: sub, finalTotal: sub - (isDiscount ? discountVal : 0) };
   }, [cart, isDiscount, discountVal]);
+
+  // Manejar retroceso de modales con la flecha atrás de Android
+  useEffect(() => {
+    const handleBackButton = (e: Event) => {
+      if (ticketData) {
+        e.preventDefault();
+        setTicketData(null);
+        return;
+      }
+      if (showCelebration) {
+        e.preventDefault();
+        setShowCelebration(false);
+        return;
+      }
+      if (isNewCustomerModalOpen) {
+        e.preventDefault();
+        setIsNewCustomerModalOpen(false);
+        return;
+      }
+      if (showMermaPrompt) {
+        e.preventDefault();
+        setShowMermaPrompt(null);
+        return;
+      }
+      if (isFilterMenuOpen) {
+        e.preventDefault();
+        setIsFilterMenuOpen(false);
+        return;
+      }
+      if (isModalOpen) {
+        e.preventDefault();
+        setIsModalOpen(false);
+        setEditingSale(null);
+        return;
+      }
+    };
+    window.addEventListener('app:backbutton', handleBackButton);
+    return () => window.removeEventListener('app:backbutton', handleBackButton);
+  }, [ticketData, showCelebration, isNewCustomerModalOpen, showMermaPrompt, isFilterMenuOpen, isModalOpen]);
 
   const addToCart = (product: Product) => {
     if ((product.stock || 0) <= 0) return alert('Sin existencias');

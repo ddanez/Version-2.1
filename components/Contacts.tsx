@@ -52,6 +52,30 @@ export const Contacts: React.FC<Props> = ({ type, items, setItems, relatedData, 
     }
   }, [historyItem, type]);
 
+  // Manejar retroceso de modales con la flecha atrás de Android
+  useEffect(() => {
+    const handleBackButton = (e: Event) => {
+      if (selectedTicket) {
+        e.preventDefault();
+        setSelectedTicket(null);
+        return;
+      }
+      if (historyItem) {
+        e.preventDefault();
+        setHistoryItem(null);
+        return;
+      }
+      if (isModalOpen) {
+        e.preventDefault();
+        setIsModalOpen(false);
+        setEditingItem(null);
+        return;
+      }
+    };
+    window.addEventListener('app:backbutton', handleBackButton);
+    return () => window.removeEventListener('app:backbutton', handleBackButton);
+  }, [selectedTicket, historyItem, isModalOpen]);
+
   const filteredItems = useMemo(() => {
     let result = items.filter(i => 
       (i.name || '').toLowerCase().includes(searchTerm.toLowerCase()) || 

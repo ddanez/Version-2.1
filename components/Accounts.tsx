@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { CheckCircle2, DollarSign, Calendar, User, Truck, MessageCircle, Wallet, ChevronDown, ChevronUp, ArrowRight, Search, Printer, X, Trash2, FileText } from 'lucide-react';
 import { AppSettings, Sale, Purchase, CompanyInfo, Customer, Supplier } from '../types';
 import { dbService } from '../db';
@@ -27,6 +27,34 @@ const Accounts: React.FC<Props> = ({ type, items, settings, company, onUpdate, c
   const [searchTerm, setSearchTerm] = useState('');
   const [printReportData, setPrintReportData] = useState<any>(null);
   const [showGlobalReport, setShowGlobalReport] = useState(false);
+
+  // Manejar retroceso de modales con la flecha atrás de Android
+  useEffect(() => {
+    const handleBackButton = (e: Event) => {
+      if (ticketData) {
+        e.preventDefault();
+        setTicketData(null);
+        return;
+      }
+      if (paymentModal) {
+        e.preventDefault();
+        setPaymentModal(null);
+        return;
+      }
+      if (printReportData) {
+        e.preventDefault();
+        setPrintReportData(null);
+        return;
+      }
+      if (showGlobalReport) {
+        e.preventDefault();
+        setShowGlobalReport(false);
+        return;
+      }
+    };
+    window.addEventListener('app:backbutton', handleBackButton);
+    return () => window.removeEventListener('app:backbutton', handleBackButton);
+  }, [ticketData, paymentModal, printReportData, showGlobalReport]);
 
   const chronologicalItems = useMemo(() => {
     let filtered = [...items];

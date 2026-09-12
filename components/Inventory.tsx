@@ -28,6 +28,25 @@ const Inventory: React.FC<Props> = ({ products, setProducts, settings }) => {
     }
   }, [showKardex]);
 
+  // Manejar retroceso de modales con la flecha atrás de Android
+  useEffect(() => {
+    const handleBackButton = (e: Event) => {
+      if (showKardex) {
+        e.preventDefault();
+        setShowKardex(null);
+        return;
+      }
+      if (isModalOpen) {
+        e.preventDefault();
+        setIsModalOpen(false);
+        setEditingProduct(null);
+        return;
+      }
+    };
+    window.addEventListener('app:backbutton', handleBackButton);
+    return () => window.removeEventListener('app:backbutton', handleBackButton);
+  }, [showKardex, isModalOpen]);
+
   // Optimización: Memoizar filtrado para evitar lag
   const filteredProducts = useMemo(() => {
     return products.filter(p => {

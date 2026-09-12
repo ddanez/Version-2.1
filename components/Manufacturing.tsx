@@ -21,6 +21,29 @@ const Manufacturing: React.FC<ManufacturingProps> = ({ settings }) => {
   const [showRecipeModal, setShowRecipeModal] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{ show: boolean; title: string; onConfirm: () => void } | null>(null);
 
+  // Manejar retroceso de modales con la flecha atrás de Android
+  useEffect(() => {
+    const handleBackButton = (e: Event) => {
+      if (confirmModal) {
+        e.preventDefault();
+        setConfirmModal(null);
+        return;
+      }
+      if (showIngredientModal) {
+        e.preventDefault();
+        setShowIngredientModal(false);
+        return;
+      }
+      if (showRecipeModal) {
+        e.preventDefault();
+        setShowRecipeModal(false);
+        return;
+      }
+    };
+    window.addEventListener('app:backbutton', handleBackButton);
+    return () => window.removeEventListener('app:backbutton', handleBackButton);
+  }, [confirmModal, showIngredientModal, showRecipeModal]);
+
   // New Ingredient State
   const [newIngredient, setNewIngredient] = useState<Partial<Ingredient>>({
     name: '',

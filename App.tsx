@@ -122,6 +122,73 @@ const App: React.FC = () => {
     address: "Calle Principal",
     phone: "0412-0000000"
   });
+
+  const navigateToTab = useCallback((newTab: AppTab) => {
+    setActiveTab(current => {
+      if (current !== newTab) {
+        setTabHistory(prev => {
+          const filtered = prev.filter(t => t !== current);
+          return [...filtered, current].slice(-20);
+        });
+        localStorage.setItem('active_tab', newTab);
+        return newTab;
+      }
+      return current;
+    });
+    setIsSidebarOpen(false);
+  }, []);
+
+  const handleGoBack = useCallback(() => {
+    // 1. Si el menú lateral está abierto, cerrarlo
+    if (isSidebarOpen) {
+      setIsSidebarOpen(false);
+      return;
+    }
+
+    // 2. Si hay modal de tasa de cambio abierto, cerrarlo
+    if (showExchangeModal) {
+      setShowExchangeModal(false);
+      return;
+    }
+
+    // 3. Notificar a componentes hijos por si tienen modales abiertos
+    const backEvent = new CustomEvent('app:backbutton', { cancelable: true });
+    window.dispatchEvent(backEvent);
+    if (backEvent.defaultPrevented) {
+      return;
+    }
+
+    // 4. Si hay historial de pestañas anteriores, ir a la última pestaña visitada
+    if (tabHistory.length > 0) {
+      const previousTab = tabHistory[tabHistory.length - 1];
+      setTabHistory(prev => prev.slice(0, -1));
+      setActiveTab(previousTab);
+      localStorage.setItem('active_tab', previousTab);
+      return;
+    }
+
+    // 5. Si no hay historial pero estamos fuera de DASHBOARD, volver a DASHBOARD
+    if (activeTab !== AppTab.DASHBOARD) {
+      setActiveTab(AppTab.DASHBOARD);
+      localStorage.setItem('active_tab', AppTab.DASHBOARD);
+      return;
+    }
+
+    // 6. Ya estamos en el Dashboard y sin historial previo: NO salir de la aplicación
+    // Se sale únicamente cuando el usuario lo indique en el menú lateral ("Salir del Sistema")
+    setExitNotice("Para salir, utiliza la opción 'Salir del Sistema' en el menú lateral");
+    if (exitNoticeTimerRef.current) {
+      clearTimeout(exitNoticeTimerRef.current);
+    }
+    exitNoticeTimerRef.current = setTimeout(() => {
+      setExitNotice(null);
+    }, 2800);
+  }, [isSidebarOpen, showExchangeModal, tabHistory, activeTab]);
+
+  const handleGoBackRef = useRef(handleGoBack);
+  useEffect(() => {
+    handleGoBackRef.current = handleGoBack;
+  }, [handleGoBack]);
   
   const [settings, setSettings] = useState<AppSettings>({
     exchangeRate: 45.5,
@@ -275,25 +342,34 @@ const App: React.FC = () => {
     }
   }, [activeTab, user]);
 
-  // Manejo del botón atrás y visibilidad para evitar salir de la app accidentalmente
+  // Manejo del botón atrás (Android Nativo con Capacitor + Navegador Web) y ciclo de vida
   useEffect(() => {
     if (!user) return;
 
+    // 1. Listener nativo de Capacitor para Android (botón atrás físico o gesto)
+    let backHandle: any = null;
+    CapacitorApp.addListener('backButton', () => {
+      handleGoBackRef.current();
+    }).then(handle => {
+      backHandle = handle;
+    }).catch(err => {
+      console.warn("Capacitor backButton no disponible en este entorno:", err);
+    });
+
+    // 2. Listener para navegador web y PWA
     const handlePopState = (e: PopStateEvent) => {
-      // Forzamos que el historial siempre tenga una entrada extra para capturar el botón atrás
-      window.history.pushState(null, "", window.location.pathname);
-      console.log("Botón atrás capturado - Evitando cierre");
+      e.preventDefault();
+      window.history.pushState({ app: 'gestor-pro' }, '', window.location.pathname);
+      handleGoBackRef.current();
     };
 
-    // Inicializamos el historial con varias entradas para mayor seguridad
-    window.history.pushState(null, "", window.location.pathname);
-    window.history.pushState(null, "", window.location.pathname);
+    window.history.pushState({ app: 'gestor-pro' }, '', window.location.pathname);
     window.addEventListener('popstate', handlePopState);
     
     // Escuchar cuando la app vuelve a primer plano
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        window.history.pushState(null, "", window.location.pathname);
+        window.history.pushState({ app: 'gestor-pro' }, '', window.location.pathname);
         localStorage.setItem('last_active_time', Date.now().toString());
         // Solo refrescar si han pasado más de 10 minutos de inactividad
         const elapsed = Date.now() - lastDataLoadRef.current;
@@ -315,16 +391,26 @@ const App: React.FC = () => {
     }, 60000); // Cada minuto
 
     return () => {
+      if (backHandle) {
+        backHandle.remove?.();
+      }
       window.removeEventListener('popstate', handlePopState);
       window.document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('unload', handleUnload);
       clearInterval(activityInterval);
     };
-  }, [user]);
+  }, [user, loadData]);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     if (!confirm('¿ESTÁ SEGURO QUE DESEA SALIR DE LA APLICACIÓN?')) return;
     forceLogout();
+    if (Capacitor.isNativePlatform()) {
+      try {
+        await CapacitorApp.exitApp();
+      } catch (e) {
+        console.error("Error al salir de la aplicación nativa:", e);
+      }
+    }
   };
 
   const handleUpdateExchangeRate = async (rate: number) => {
@@ -442,14 +528,28 @@ const App: React.FC = () => {
       )}
 
       <div className="md:hidden flex items-center justify-between p-4 bg-[#1e293b] border-b border-slate-700 sticky top-0 z-50 h-14">
-        <button 
-          type="button"
-          onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
-          className="p-2.5 text-slate-200 active:scale-90 transition-transform touch-manipulation focus:outline-none"
-          aria-label="Menú principal"
-        >
-          {isSidebarOpen ? <X size={24} /> : <Menu size={24} />}
-        </button>
+        <div className="flex items-center gap-1">
+          <button 
+            type="button"
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
+            className="p-2.5 text-slate-200 active:scale-90 transition-transform touch-manipulation focus:outline-none"
+            aria-label="Menú principal"
+          >
+            {isSidebarOpen ? <X size={24} /> : <Menu size={24} />}
+          </button>
+          {activeTab !== AppTab.DASHBOARD && (
+            <button
+              type="button"
+              onClick={handleGoBack}
+              className="p-1.5 px-2.5 text-orange-400 hover:text-orange-300 active:scale-90 transition-transform flex items-center gap-1 rounded-xl bg-slate-800/80 border border-slate-700/60 ml-1"
+              aria-label="Atrás"
+              title="Volver a la pantalla anterior"
+            >
+              <ArrowLeft size={16} />
+              <span className="text-[10px] font-bold uppercase tracking-wider">Atrás</span>
+            </button>
+          )}
+        </div>
         <span className="font-black text-[10px] truncate uppercase tracking-widest text-orange-500">{currentTabLabel}</span>
         <div className="w-8"></div>
       </div>
@@ -466,7 +566,7 @@ const App: React.FC = () => {
             <button
               key={item.id}
               type="button"
-              onClick={() => { setActiveTab(item.id); setIsSidebarOpen(false); }}
+              onClick={() => { navigateToTab(item.id); }}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all touch-manipulation active:scale-[0.98] ${activeTab === item.id ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
             >
               <item.icon size={18} />
@@ -516,6 +616,13 @@ const App: React.FC = () => {
       </main>
 
       {showExchangeModal && <ExchangeRateModal onSave={handleUpdateExchangeRate} currentRate={settings.exchangeRate} />}
+
+      {exitNotice && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[300] bg-slate-900/95 text-slate-200 border border-orange-500/50 px-5 py-3.5 rounded-2xl shadow-2xl flex items-center gap-2.5 text-xs font-black animate-in fade-in slide-in-from-bottom-3 duration-200 backdrop-blur-md max-w-sm text-center tracking-tight uppercase">
+          <span className="text-orange-500 text-sm">ℹ️</span>
+          <span>{exitNotice}</span>
+        </div>
+      )}
     </div>
   );
 };

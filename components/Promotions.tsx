@@ -32,6 +32,34 @@ const Promotions: React.FC<PromotionsProps> = ({ settings, company, customers, p
   const [showCelebration, setShowCelebration] = useState(false);
   const [celebrationData, setCelebrationData] = useState({ customerName: '', promotionName: '' });
 
+  // Manejar retroceso de modales con la flecha atrás de Android
+  useEffect(() => {
+    const handleBackButton = (e: Event) => {
+      if (showCelebration) {
+        e.preventDefault();
+        setShowCelebration(false);
+        return;
+      }
+      if (showReportModal) {
+        e.preventDefault();
+        setShowReportModal(false);
+        return;
+      }
+      if (showRedeemModal) {
+        e.preventDefault();
+        setShowRedeemModal(false);
+        return;
+      }
+      if (showPromoModal) {
+        e.preventDefault();
+        setShowPromoModal(false);
+        return;
+      }
+    };
+    window.addEventListener('app:backbutton', handleBackButton);
+    return () => window.removeEventListener('app:backbutton', handleBackButton);
+  }, [showCelebration, showReportModal, showRedeemModal, showPromoModal]);
+
   const [newPromo, setNewPromo] = useState<Partial<Promotion>>({
     name: '',
     description: '',

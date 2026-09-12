@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Plus, ShoppingCart, Truck, Search, Trash2, ArrowLeft, CheckCircle2, PlusCircle, Edit3, Loader2, UserPlus, Box, X, CreditCard, Tag, Calculator } from 'lucide-react';
 import { Purchase, Supplier, Product, AppSettings, PurchaseItem } from '../types';
 import { dbService } from '../db';
@@ -41,6 +41,30 @@ const Purchases: React.FC<Props> = ({ purchases, setPurchases, suppliers, setSup
     const sub = cart.reduce((sum, item) => sum + ((item.quantity || 0) * (item.costUSD || 0)), 0);
     return { subtotal: sub, finalTotal: sub - (isDiscount ? discountVal : 0) };
   }, [cart, isDiscount, discountVal]);
+
+  // Manejar retroceso de modales con la flecha atrás de Android
+  useEffect(() => {
+    const handleBackButton = (e: Event) => {
+      if (isSupplierModalOpen) {
+        e.preventDefault();
+        setIsSupplierModalOpen(false);
+        return;
+      }
+      if (isProductModalOpen) {
+        e.preventDefault();
+        setIsProductModalOpen(false);
+        return;
+      }
+      if (isRegisterMode) {
+        e.preventDefault();
+        setIsRegisterMode(false);
+        setCart([]);
+        return;
+      }
+    };
+    window.addEventListener('app:backbutton', handleBackButton);
+    return () => window.removeEventListener('app:backbutton', handleBackButton);
+  }, [isSupplierModalOpen, isProductModalOpen, isRegisterMode]);
 
   const addToCart = (product: Product) => {
     setCart(prev => {
