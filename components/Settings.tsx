@@ -67,17 +67,142 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
     secure: window.isSecureContext
   });
 
-  const downloadPDF = (title: string, content: string, filename: string) => {
-    const doc = new jsPDF();
-    const splitText = doc.splitTextToSize(content, 180);
-    
-    doc.setFontSize(20);
-    doc.text(title, 10, 20);
-    
-    doc.setFontSize(10);
-    doc.text(splitText, 10, 35);
-    
-    doc.save(filename);
+  const [isExportingDoc, setIsExportingDoc] = useState<string | null>(null);
+
+  const downloadPDF = async (title: string, content: string, filename: string) => {
+    try {
+      setIsExportingDoc(filename);
+      const doc = new jsPDF({
+        orientation: 'p',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 15;
+      const maxLineWidth = pageWidth - (margin * 2);
+      let currentY = 20;
+
+      // Encabezado Principal
+      doc.setFillColor(30, 41, 59); // Slate-800
+      doc.rect(0, 0, pageWidth, 28, 'F');
+
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.text(title, margin, 14);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(203, 213, 225);
+      doc.text(`Generado: ${new Date().toLocaleDateString('es-VE')} | D'Danez Gestor Pro`, margin, 21);
+
+      currentY = 38;
+
+      // Dividir el texto en párrafos/líneas
+      const rawLines = content.trim().split('\n');
+
+      for (const line of rawLines) {
+        const trimmed = line.trim();
+
+        // Línea vacía
+        if (!trimmed) {
+          currentY += 4;
+          continue;
+        }
+
+        // Separadores
+        if (trimmed.startsWith('==') || trimmed.startsWith('--')) {
+          doc.setDrawColor(226, 232, 240);
+          doc.setLineWidth(0.3);
+          doc.line(margin, currentY, pageWidth - margin, currentY);
+          currentY += 5;
+          continue;
+        }
+
+        // Títulos principales (ej. 1. DESCRIPCIÓN..., ¿QUÉ ES...)
+        const isHeading = /^[0-9]\.\s+[A-ZÁÉÍÓÚÑ]/.test(trimmed) || trimmed.startsWith('¿') || trimmed.endsWith('?') || /^[A-ZÁÉÍÓÚÑ\s]{4,}$/.test(trimmed);
+        const isSubheading = /^[0-9]\.[0-9]/.test(trimmed) || /^[0-9]\.\s/.test(trimmed);
+
+        if (isHeading) {
+          if (currentY + 12 > pageHeight - margin) {
+            doc.addPage();
+            currentY = margin;
+          }
+          currentY += 3;
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(10);
+          doc.setTextColor(234, 88, 12); // Orange-600
+          doc.text(trimmed, margin, currentY);
+          currentY += 6;
+        } else if (isSubheading) {
+          if (currentY + 10 > pageHeight - margin) {
+            doc.addPage();
+            currentY = margin;
+          }
+          currentY += 2;
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(9);
+          doc.setTextColor(30, 41, 59);
+          doc.text(trimmed, margin, currentY);
+          currentY += 5;
+        } else {
+          // Texto regular
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(8.5);
+          doc.setTextColor(51, 65, 85); // Slate-700
+
+          const wrappedLines = doc.splitTextToSize(trimmed, maxLineWidth);
+          for (const wLine of wrappedLines) {
+            if (currentY + 5 > pageHeight - margin) {
+              doc.addPage();
+              currentY = margin;
+            }
+            doc.text(wLine, margin, currentY);
+            currentY += 4.5;
+          }
+        }
+      }
+
+      // Pie de página en todas las hojas
+      const totalPages = doc.getNumberOfPages();
+      for (let i = 1; i <= totalPages; i++) {
+        doc.setPage(i);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.5);
+        doc.setTextColor(148, 163, 184);
+        doc.text(
+          `Página ${i} de ${totalPages} - D'Danez Gestor Pro`,
+          pageWidth / 2,
+          pageHeight - 8,
+          { align: 'center' }
+        );
+      }
+
+      // Convertir a blob y dataUrl para máxima compatibilidad con downloadOrShareFile
+      const pdfBlob = doc.output('blob');
+      const pdfDataUri = doc.output('datauristring');
+
+      const success = await downloadOrShareFile({
+        fileName: filename,
+        title: title,
+        blob: pdfBlob,
+        dataUrl: pdfDataUri,
+        mimeType: 'application/pdf',
+        dialogTitle: `Guardar o Compartir ${filename}`,
+        preferShare: true
+      });
+
+      if (!success) {
+        doc.save(filename);
+      }
+    } catch (error) {
+      console.error('Error al generar o descargar PDF de documentación:', error);
+      alert('Hubo un inconveniente al generar el documento. Por favor intente nuevamente.');
+    } finally {
+      setIsExportingDoc(null);
+    }
   };
 
   useEffect(() => {
@@ -817,17 +942,39 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
               <div className="grid grid-cols-1 gap-3">
                 <button 
                   type="button" 
-                  onClick={() => downloadPDF('DESCRIPCIÓN TÉCNICA - GESTOR PRO', TECHNICAL_DESCRIPTION, 'GestorPro_Tecnico.pdf')}
-                  className="w-full bg-blue-600/10 hover:bg-blue-600 text-blue-500 hover:text-white border border-blue-600/30 p-4 rounded-2xl transition-all font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"
+                  disabled={isExportingDoc !== null}
+                  onClick={() => downloadPDF("DESCRIPCIÓN TÉCNICA - D'DANEZ GESTOR PRO", TECHNICAL_DESCRIPTION, 'DDanez_GestorPro_Tecnico.pdf')}
+                  className="w-full bg-blue-600/10 hover:bg-blue-600 text-blue-500 hover:text-white border border-blue-600/30 p-4 rounded-2xl transition-all font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 disabled:opacity-50 active:scale-98"
                 >
-                  <Download size={16} /> DESCARGAR DESCRIPCIÓN TÉCNICA (PDF)
+                  {isExportingDoc === 'DDanez_GestorPro_Tecnico.pdf' ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin text-blue-400" />
+                      <span>GENERANDO DOCUMENTO TÉCNICO...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download size={16} />
+                      <span>DESCARGAR / COMPARTIR DESCRIPCIÓN TÉCNICA (PDF)</span>
+                    </>
+                  )}
                 </button>
                 <button 
                   type="button" 
-                  onClick={() => downloadPDF('DESCRIPCIÓN PROMOCIONAL - GESTOR PRO', PROMOTIONAL_DESCRIPTION, 'GestorPro_Promocional.pdf')}
-                  className="w-full bg-indigo-600/10 hover:bg-indigo-600 text-indigo-500 hover:text-white border border-indigo-600/30 p-4 rounded-2xl transition-all font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"
+                  disabled={isExportingDoc !== null}
+                  onClick={() => downloadPDF("DESCRIPCIÓN PROMOCIONAL - D'DANEZ GESTOR PRO", PROMOTIONAL_DESCRIPTION, 'DDanez_GestorPro_Promocional.pdf')}
+                  className="w-full bg-indigo-600/10 hover:bg-indigo-600 text-indigo-500 hover:text-white border border-indigo-600/30 p-4 rounded-2xl transition-all font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 disabled:opacity-50 active:scale-98"
                 >
-                  <Download size={16} /> DESCARGAR DESCRIPCIÓN PROMOCIONAL (PDF)
+                  {isExportingDoc === 'DDanez_GestorPro_Promocional.pdf' ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin text-indigo-400" />
+                      <span>GENERANDO DOCUMENTO PROMOCIONAL...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download size={16} />
+                      <span>DESCARGAR / COMPARTIR DESCRIPCIÓN PROMOCIONAL (PDF)</span>
+                    </>
+                  )}
                 </button>
               </div>
             </section>
