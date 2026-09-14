@@ -145,7 +145,14 @@ const App: React.FC = () => {
       return;
     }
 
-    // 2. Si hay modal de tasa de cambio abierto, cerrarlo
+    // 2. Si hay aviso de permiso de cámara abierto, cerrarlo y no volver a mostrarlo
+    if (showPermissionNudge) {
+      setShowPermissionNudge(false);
+      localStorage.setItem('camera_permission_prompted', 'true');
+      return;
+    }
+
+    // 3. Si hay modal de tasa de cambio abierto, cerrarlo
     if (showExchangeModal) {
       setShowExchangeModal(false);
       return;
@@ -290,22 +297,39 @@ const App: React.FC = () => {
       if (!savedSettings || savedSettings.lastRateUpdate !== today) {
         setShowExchangeModal(true);
       }
-
-      if (navigator.permissions && navigator.permissions.query) {
-        try {
-          const status = await navigator.permissions.query({ name: 'camera' as PermissionName });
-          if (status.state === 'prompt') {
-            setShowPermissionNudge(true);
-          }
-        } catch (e) {
-          console.warn("Permissions API no soportada");
-        }
-      }
     } catch (err) {
       console.error("Error al cargar datos:", err);
     } finally {
       setIsDataLoaded(true);
     }
+  }, [user]);
+
+  // Comprobación de permiso de cámara: ÚNICAMENTE en el primer inicio de la app
+  useEffect(() => {
+    if (!user) return;
+    const hasPrompted = localStorage.getItem('camera_permission_prompted');
+    if (hasPrompted) return;
+
+    // Se marca inmediatamente para garantizar que NUNCA vuelva a salir en inicios posteriores
+    localStorage.setItem('camera_permission_prompted', 'true');
+
+    const checkInitialCameraPermission = async () => {
+      try {
+        if (navigator.permissions && navigator.permissions.query) {
+          const status = await navigator.permissions.query({ name: 'camera' as PermissionName });
+          if (status.state === 'prompt') {
+            setShowPermissionNudge(true);
+          }
+        } else {
+          setShowPermissionNudge(true);
+        }
+      } catch (e) {
+        console.warn("Permissions API no disponible para cámara");
+      }
+    };
+
+    const timer = setTimeout(checkInitialCameraPermission, 1200);
+    return () => clearTimeout(timer);
   }, [user]);
 
   const forceLogout = useCallback(() => {
@@ -445,14 +469,21 @@ const App: React.FC = () => {
   const currentTabLabel = navItems.find(item => item.id === activeTab)?.label || 'GESTIÓN';
 
   const requestCameraPermission = async () => {
+    localStorage.setItem('camera_permission_prompted', 'true');
+    setShowPermissionNudge(false);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      stream.getTracks().forEach(track => track.stop());
-      setShowPermissionNudge(false);
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach(track => track.stop());
+      }
     } catch (err) {
-      console.error("Error al solicitar permiso de cámara:", err);
-      setShowPermissionNudge(false);
+      console.warn("Permiso de cámara no concedido o no disponible:", err);
     }
+  };
+
+  const dismissCameraPermission = () => {
+    localStorage.setItem('camera_permission_prompted', 'true');
+    setShowPermissionNudge(false);
   };
 
   const cxcPendingItems = useMemo(() => sales.filter(s => s.status === 'pending'), [sales]);
@@ -506,10 +537,18 @@ const App: React.FC = () => {
 
   return (
     <div className={`min-h-screen ${settings.darkMode ? 'bg-[#0f172a] text-white' : 'bg-slate-50 text-slate-900'} flex flex-col md:flex-row`}>
-      {/* Aviso de Permisos en ESPAÑOL */}
+      {/* Aviso de Permisos: ÚNICAMENTE al primer inicio */}
       {showPermissionNudge && (
         <div className="fixed inset-0 z-[1000] bg-[#0f172a]/95 backdrop-blur-md flex items-center justify-center p-6">
-          <div className="bg-[#1e293b] border border-slate-700 p-8 rounded-[3rem] max-w-sm w-full text-center shadow-2xl animate-in zoom-in-95">
+          <div className="bg-[#1e293b] border border-slate-700 p-8 rounded-[3rem] max-w-sm w-full text-center shadow-2xl animate-in zoom-in-95 relative">
+            <button
+              type="button"
+              onClick={dismissCameraPermission}
+              className="absolute top-6 right-6 p-2 rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors touch-manipulation"
+              aria-label="Cerrar"
+            >
+              <X size={20} />
+            </button>
             <div className="w-20 h-20 bg-orange-500/10 text-orange-500 rounded-3xl flex items-center justify-center mx-auto mb-6">
               <Camera size={40} />
             </div>
@@ -517,12 +556,22 @@ const App: React.FC = () => {
             <p className="text-slate-400 text-sm mb-8 leading-relaxed font-bold uppercase tracking-tight">
               ESTA APLICACIÓN REQUIERE ACCESO A SU CÁMARA PARA PERMITIR EL ESCANEO DE CÓDIGOS DE BARRAS EN VENTAS E INVENTARIO.
             </p>
-            <button 
-              onClick={requestCameraPermission}
-              className="w-full bg-orange-500 hover:bg-orange-600 text-white font-black py-5 rounded-2xl transition-all shadow-xl shadow-orange-500/20 uppercase text-[10px] tracking-[0.2em]"
-            >
-              PERMITIR ACCESO
-            </button>
+            <div className="space-y-3">
+              <button 
+                type="button"
+                onClick={requestCameraPermission}
+                className="w-full bg-orange-500 hover:bg-orange-600 active:scale-95 text-white font-black py-4 rounded-2xl transition-all shadow-xl shadow-orange-500/20 uppercase text-[10px] tracking-[0.2em] touch-manipulation"
+              >
+                PERMITIR ACCESO
+              </button>
+              <button 
+                type="button"
+                onClick={dismissCameraPermission}
+                className="w-full bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-400 hover:text-white font-bold py-3.5 rounded-2xl transition-all uppercase text-[10px] tracking-wider touch-manipulation border border-slate-700/60"
+              >
+                AHORA NO / CONTINUAR
+              </button>
+            </div>
           </div>
         </div>
       )}
