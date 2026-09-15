@@ -10,6 +10,7 @@ import { dbService } from './db';
 import { isBiometricConfigured, authenticateWithBiometrics } from './biometricHelper';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
+import { TextZoom } from '@capacitor/text-zoom';
 
 declare global {
   interface Window {
@@ -115,6 +116,20 @@ const App: React.FC = () => {
       localStorage.setItem('last_active_time', Date.now().toString());
     }
   }, [isDataLoaded, showSplash]);
+
+  // Asegurar que el tamaño y escala en la APK coincidan exactamente con la versión web de Termux
+  useEffect(() => {
+    const lockScale = async () => {
+      try {
+        if (Capacitor.isNativePlatform()) {
+          await TextZoom.set({ value: 1.0 });
+        }
+      } catch (err) {
+        console.warn('TextZoom no disponible:', err);
+      }
+    };
+    lockScale();
+  }, []);
 
   const [company, setCompany] = useState<CompanyInfo>({
     name: "D'DANEZ DISTRIBUCIONES",
