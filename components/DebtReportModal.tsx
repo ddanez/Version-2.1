@@ -3,6 +3,7 @@ import React, { useRef, useState } from 'react';
 import { X, Printer, Download, FileText, Share2 } from 'lucide-react';
 import { CompanyInfo, AppSettings, Sale, Purchase } from '../types';
 import * as htmlToImage from 'html-to-image';
+import { jsPDF } from 'jspdf';
 import { calculateBS } from '../utils';
 import { downloadOrShareFile } from '../downloadHelper';
 import { Capacitor } from '@capacitor/core';
@@ -61,6 +62,281 @@ export const DebtReportModal: React.FC<Props> = ({
     } catch (err) {
       console.error('Error al generar imagen:', err);
       alert('No se pudo generar la imagen.');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const sanitizeText = (txt: string) => {
+    if (!txt) return '';
+    return txt.replace(/[\u{1F300}-\u{1F9FF}|\u{2600}-\u{26FF}|\u{2700}-\u{27BF}]/gu, '').trim();
+  };
+
+  const handleDownloadPDF = async () => {
+    setIsGenerating(true);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      const doc = new jsPDF({
+        orientation: 'p',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 14;
+      const contentWidth = pageWidth - (margin * 2);
+      const maxY = pageHeight - 16;
+
+      // Banner Principal
+      doc.setFillColor(15, 23, 42); // Slate-900
+      doc.rect(margin, 14, contentWidth, 24, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.setTextColor(255, 255, 255);
+      doc.text(sanitizeText(company.name) || "D'DANEZ DISTRIBUCIONES", margin + 5, 23);
+
+      doc.setFontSize(9.5);
+      doc.setTextColor(249, 115, 22); // Orange-500
+      doc.text(reportTitle, margin + 5, 31);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(203, 213, 225);
+      doc.text(`Fecha: ${new Date().toLocaleDateString('es-VE')}`, pageWidth - margin - 5, 20.5, { align: 'right' });
+      const rifRate = `RIF: ${company.rif || 'N/A'} • Tasa: ${settings.exchangeRate > 0 ? settings.exchangeRate.toFixed(2) + ' Bs/$' : 'N/A'}`;
+      doc.text(rifRate, pageWidth - margin - 5, 26, { align: 'right' });
+      doc.text(`Documentos pendientes: ${invoices.length}`, pageWidth - margin - 5, 31.5, { align: 'right' });
+
+      // Info Entidad
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(203, 213, 225);
+      doc.roundedRect(margin, 41, contentWidth, 14, 1.5, 1.5, 'FD');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text(entityLabel, margin + 5, 46);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(15, 23, 42);
+      doc.text(sanitizeText(entityName), margin + 5, 51.5);
+
+      // Cajas de Totales (3 Columnas)
+      const boxWidth = (contentWidth - 6) / 3;
+      const boxHeight = 16;
+      const boxY = 58;
+
+      // Caja 1: Total Deuda
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(203, 213, 225);
+      doc.roundedRect(margin, boxY, boxWidth, boxHeight, 1.5, 1.5, 'FD');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text('TOTAL DEUDA', margin + 3.5, boxY + 4.5);
+      doc.setFontSize(10);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`US$ ${totalPending.toFixed(2).replace('.', ',')}`, margin + 3.5, boxY + 9.5);
+      if (settings.exchangeRate > 0) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(71, 85, 105);
+        const bsTotal = calculateBS(totalPending, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 });
+        doc.text(`≈ ${bsTotal} Bs.`, margin + 3.5, boxY + 13.5);
+      }
+
+      // Caja 2: Saldo a Favor
+      const box2X = margin + boxWidth + 3;
+      doc.setFillColor(236, 253, 245);
+      doc.setDrawColor(110, 231, 183);
+      doc.roundedRect(box2X, boxY, boxWidth, boxHeight, 1.5, 1.5, 'FD');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(6, 95, 70);
+      doc.text('SALDO A FAVOR', box2X + 3.5, boxY + 4.5);
+      doc.setFontSize(10);
+      doc.setTextColor(4, 120, 87);
+      doc.text(`US$ ${creditBalance.toFixed(2).replace('.', ',')}`, box2X + 3.5, boxY + 9.5);
+      if (settings.exchangeRate > 0) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(6, 95, 70);
+        const bsCredit = calculateBS(creditBalance, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 });
+        doc.text(`≈ ${bsCredit} Bs.`, box2X + 3.5, boxY + 13.5);
+      }
+
+      // Caja 3: Neto Pendiente
+      const netPending = Math.max(0, totalPending - creditBalance);
+      const box3X = box2X + boxWidth + 3;
+      doc.setFillColor(15, 23, 42);
+      doc.setDrawColor(30, 41, 59);
+      doc.roundedRect(box3X, boxY, boxWidth, boxHeight, 1.5, 1.5, 'FD');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(251, 146, 60);
+      doc.text(`NETO PENDIENTE`, box3X + 3.5, boxY + 4.5);
+      doc.setFontSize(10);
+      doc.setTextColor(255, 255, 255);
+      doc.text(`US$ ${netPending.toFixed(2).replace('.', ',')}`, box3X + 3.5, boxY + 9.5);
+      if (settings.exchangeRate > 0) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(203, 213, 225);
+        const bsNet = calculateBS(netPending, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 });
+        doc.text(`≈ ${bsNet} Bs.`, box3X + 3.5, boxY + 13.5);
+      }
+
+      // Tabla de Documentos
+      let currentY = 78;
+      const drawTableHead = (y: number) => {
+        doc.setFillColor(30, 41, 59);
+        doc.rect(margin, y, contentWidth, 7, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.5);
+        doc.setTextColor(255, 255, 255);
+        doc.text('#', margin + 3.5, y + 4.8, { align: 'center' });
+        doc.text('DOCUMENTO', margin + 9, y + 4.8);
+        doc.text('FECHA', margin + 45, y + 4.8);
+        doc.text('ORIGINAL (USD)', margin + 85, y + 4.8, { align: 'right' });
+        doc.text('ABONADO', margin + 118, y + 4.8, { align: 'right' });
+        doc.text('PENDIENTE (USD)', margin + 150, y + 4.8, { align: 'right' });
+        doc.text('PENDIENTE (BS.)', margin + contentWidth - 3, y + 4.8, { align: 'right' });
+      };
+
+      drawTableHead(currentY);
+      currentY += 7;
+
+      invoices.forEach((inv, idx) => {
+        const rowH = 6.8;
+        if (currentY + rowH > maxY) {
+          doc.addPage();
+          doc.setFillColor(15, 23, 42);
+          doc.rect(margin, 10, contentWidth, 9, 'F');
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(8);
+          doc.setTextColor(255, 255, 255);
+          doc.text(`${sanitizeText(company.name)} • ${reportTitle} - ${sanitizeText(entityName)}`, margin + 3, 16);
+          currentY = 22;
+          drawTableHead(currentY);
+          currentY += 7;
+        }
+
+        if (idx % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+          doc.rect(margin, currentY, contentWidth, rowH, 'F');
+        }
+
+        const balance = (inv.totalUSD || 0) - (inv.paidAmountUSD || 0);
+        const invId = inv.id ? `#${inv.id.slice(-6).toUpperCase()}` : '#DOC';
+        const invDate = inv.date ? new Date(inv.date).toLocaleDateString('es-VE') : '';
+        const bsFormatted = settings.exchangeRate > 0
+          ? `${calculateBS(balance, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 })} Bs.`
+          : '-';
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(100, 116, 139);
+        doc.text(String(idx + 1), margin + 3.5, currentY + 4.6, { align: 'center' });
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.5);
+        doc.setTextColor(15, 23, 42);
+        doc.text(invId, margin + 9, currentY + 4.6);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(71, 85, 105);
+        doc.text(invDate, margin + 45, currentY + 4.6);
+
+        doc.text(`US$ ${(inv.totalUSD || 0).toFixed(2)}`, margin + 85, currentY + 4.6, { align: 'right' });
+        doc.text(`US$ ${(inv.paidAmountUSD || 0).toFixed(2)}`, margin + 118, currentY + 4.6, { align: 'right' });
+
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(15, 23, 42);
+        doc.text(`US$ ${balance.toFixed(2)}`, margin + 150, currentY + 4.6, { align: 'right' });
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(51, 65, 85);
+        doc.text(bsFormatted, margin + contentWidth - 3, currentY + 4.6, { align: 'right' });
+
+        doc.setDrawColor(241, 245, 249);
+        doc.line(margin, currentY + rowH, margin + contentWidth, currentY + rowH);
+        currentY += rowH;
+      });
+
+      // Total Final
+      if (currentY + 10 > maxY) {
+        doc.addPage();
+        currentY = 22;
+      }
+
+      doc.setFillColor(15, 23, 42);
+      doc.rect(margin, currentY, contentWidth, 8, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.8);
+      doc.setTextColor(249, 115, 22);
+      doc.text(`TOTAL PENDIENTE (${invoices.length} DOCUMENTOS)`, margin + 5, currentY + 5.2);
+
+      doc.setTextColor(255, 255, 255);
+      doc.text(`US$ ${totalPending.toFixed(2).replace('.', ',')}`, margin + 150, currentY + 5.2, { align: 'right' });
+
+      if (settings.exchangeRate > 0) {
+        const totalBsFull = `${calculateBS(totalPending, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 })} Bs.`;
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.2);
+        doc.text(totalBsFull, margin + contentWidth - 3, currentY + 5.2, { align: 'right' });
+      }
+
+      // Pie de página
+      const totalPages = doc.getNumberOfPages();
+      for (let p = 1; p <= totalPages; p++) {
+        doc.setPage(p);
+        doc.setDrawColor(226, 232, 240);
+        doc.setLineWidth(0.3);
+        doc.line(margin, 287, margin + contentWidth, 287);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(148, 163, 184);
+        doc.text(
+          `Página ${p} de ${totalPages} • D'Danez Gestor Pro - Estado de Cuenta`,
+          pageWidth / 2,
+          291.5,
+          { align: 'center' }
+        );
+        doc.text(
+          `Impreso: ${new Date().toLocaleDateString('es-VE')} ${new Date().toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' })}`,
+          pageWidth - margin,
+          291.5,
+          { align: 'right' }
+        );
+      }
+
+      const pdfBlob = doc.output('blob');
+      const pdfDataUri = doc.output('datauristring');
+      const fileName = `Estado_Cuenta_${entityName.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
+
+      const success = await downloadOrShareFile({
+        fileName,
+        title: `${reportTitle} - ${entityName}`,
+        blob: pdfBlob,
+        dataUrl: pdfDataUri,
+        mimeType: 'application/pdf',
+        dialogTitle: `Guardar o Compartir ${fileName}`,
+        preferShare: true
+      });
+
+      if (!success) {
+        doc.save(fileName);
+      }
+    } catch (err) {
+      console.error('Error al generar PDF:', err);
+      alert('Hubo un error al generar el PDF.');
     } finally {
       setIsGenerating(false);
     }
@@ -185,18 +461,29 @@ export const DebtReportModal: React.FC<Props> = ({
            </div>
         </div>
 
-        <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col gap-3 print:hidden">
+        <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col gap-2.5 print:hidden">
            <button 
-             onClick={handleDownloadImage} 
+             onClick={handleDownloadPDF} 
              disabled={isGenerating}
-             className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-2xl font-black text-[12px] uppercase tracking-widest shadow-xl flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50"
+             className="w-full bg-orange-600 hover:bg-orange-700 text-white py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl flex items-center justify-center gap-2.5 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
            >
-              {isGenerating ? 'Generando...' : <><Share2 size={20} /> Guardar o Compartir Imagen</>}
+              {isGenerating ? 'Generando PDF...' : <><FileText size={18} /> Descargar / Compartir PDF</>}
            </button>
-           
-           <div className="flex gap-3">
-              <button onClick={handlePrint} className="flex-1 bg-slate-800 text-white py-3 rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"><Printer size={16} /> Imprimir</button>
-              <button onClick={onClose} className="flex-1 bg-slate-200 text-slate-700 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest">Cerrar</button>
+
+           <div className="flex gap-2">
+              <button 
+                onClick={handleDownloadImage} 
+                disabled={isGenerating}
+                className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-3 rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-1.5 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+              >
+                 <Share2 size={15} /> Imagen
+              </button>
+              <button onClick={handlePrint} className="flex-1 bg-slate-700 hover:bg-slate-800 text-white py-3 rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-1.5 transition-all cursor-pointer">
+                 <Printer size={15} /> Imprimir
+              </button>
+              <button onClick={onClose} className="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all cursor-pointer">
+                 Cerrar
+              </button>
            </div>
         </div>
       </div>

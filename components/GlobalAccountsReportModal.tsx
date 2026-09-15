@@ -1,8 +1,8 @@
 
 import React, { useRef, useState, useMemo } from 'react';
-import { X, FileText, LayoutList, List, Share2 } from 'lucide-react';
+import { X, FileText, LayoutList, List, Download, Share2 } from 'lucide-react';
 import { CompanyInfo, AppSettings, Sale, Purchase } from '../types';
-import * as htmlToImage from 'html-to-image';
+import { jsPDF } from 'jspdf';
 import { calculateBS } from '../utils';
 import { downloadOrShareFile } from '../downloadHelper';
 
@@ -58,35 +58,373 @@ export const GlobalAccountsReportModal: React.FC<Props> = ({
 
   if (!isOpen) return null;
 
-  const handleDownloadImage = async () => {
-    if (!reportRef.current) return;
-    setIsGenerating(true);
-    
-    try {
-      // Pequeña pausa para asegurar que fuentes y DOM estén listos
-      await new Promise(resolve => setTimeout(resolve, 350));
+  const sanitizeText = (txt: string) => {
+    if (!txt) return '';
+    return txt.replace(/[\u{1F300}-\u{1F9FF}|\u{2600}-\u{26FF}|\u{2700}-\u{27BF}]/gu, '').trim();
+  };
 
-      const dataUrl = await htmlToImage.toPng(reportRef.current, {
-        backgroundColor: '#ffffff',
-        pixelRatio: 3, // Alta definición para máxima nitidez al ampliar en móviles
-        cacheBust: true,
+  const handleDownloadPDF = async () => {
+    setIsGenerating(true);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      const doc = new jsPDF({
+        orientation: 'p',
+        unit: 'mm',
+        format: 'a4'
       });
 
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 14;
+      const contentWidth = pageWidth - (margin * 2);
+      const maxY = pageHeight - 16;
+
+      const sortName = sortOption === 'alphabetical' 
+        ? 'Alfabético (A-Z)' 
+        : sortOption === 'balance-high' 
+        ? 'Mayor Saldo' 
+        : 'Menor Saldo';
+
+      const drawSubsequentPageHeader = () => {
+        doc.setFillColor(15, 23, 42);
+        doc.rect(margin, 10, contentWidth, 9, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8);
+        doc.setTextColor(255, 255, 255);
+        doc.text(`${sanitizeText(company.name) || "D'DANEZ DISTRIBUCIONES"} • ${reportTitle}`, margin + 3, 16);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.5);
+        doc.setTextColor(203, 213, 225);
+        const rateText = settings.exchangeRate > 0 ? `Tasa: ${settings.exchangeRate.toFixed(2)} Bs/$` : '';
+        doc.text(`${new Date().toLocaleDateString('es-VE')}  ${rateText}`, pageWidth - margin - 3, 16, { align: 'right' });
+      };
+
+      const drawTableHeader = (y: number) => {
+        doc.setFillColor(30, 41, 59);
+        doc.rect(margin, y, contentWidth, 7, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.5);
+        doc.setTextColor(255, 255, 255);
+        doc.text('#', margin + 3.5, y + 4.8, { align: 'center' });
+        doc.text(type === 'cxc' ? 'CLIENTE / RAZÓN SOCIAL' : 'PROVEEDOR / RAZÓN SOCIAL', margin + 9, y + 4.8);
+        doc.text('SALDO FAVOR', margin + 118, y + 4.8, { align: 'right' });
+        doc.text('PENDIENTE (USD)', margin + 145, y + 4.8, { align: 'right' });
+        doc.text('PENDIENTE (BS.)', margin + contentWidth - 3, y + 4.8, { align: 'right' });
+      };
+
+      // Banner Principal Página 1
+      doc.setFillColor(15, 23, 42);
+      doc.rect(margin, 14, contentWidth, 24, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.setTextColor(255, 255, 255);
+      doc.text(sanitizeText(company.name) || "D'DANEZ DISTRIBUCIONES", margin + 5, 23);
+
+      doc.setFontSize(9.5);
+      doc.setTextColor(249, 115, 22);
+      doc.text(reportTitle, margin + 5, 31);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(203, 213, 225);
+      doc.text(`Fecha: ${new Date().toLocaleDateString('es-VE')}`, pageWidth - margin - 5, 20.5, { align: 'right' });
+      const rifRate = `RIF: ${company.rif || 'N/A'} • Tasa: ${settings.exchangeRate > 0 ? settings.exchangeRate.toFixed(2) + ' Bs/$' : 'N/A'}`;
+      doc.text(rifRate, pageWidth - margin - 5, 26, { align: 'right' });
+      doc.text(`Modo: ${viewMode === 'summary' ? 'Resumen' : 'Detallado'} • Orden: ${sortName}`, pageWidth - margin - 5, 31.5, { align: 'right' });
+
+      // Cajas de Totales KPI
+      const boxWidth = (contentWidth - 6) / 3;
+      const boxHeight = 16;
+      const boxY = 41;
+
+      // Caja 1: Total Pendiente
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(203, 213, 225);
+      doc.roundedRect(margin, boxY, boxWidth, boxHeight, 1.5, 1.5, 'FD');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text('TOTAL PENDIENTE', margin + 3.5, boxY + 4.5);
+      doc.setFontSize(10);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`US$ ${totalOutstanding.toFixed(2).replace('.', ',')}`, margin + 3.5, boxY + 9.5);
+      if (settings.exchangeRate > 0) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(71, 85, 105);
+        const bsTotal = calculateBS(totalOutstanding, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 });
+        doc.text(`≈ ${bsTotal} Bs.`, margin + 3.5, boxY + 13.5);
+      }
+
+      // Caja 2: Total Saldo a Favor
+      const box2X = margin + boxWidth + 3;
+      doc.setFillColor(236, 253, 245);
+      doc.setDrawColor(110, 231, 183);
+      doc.roundedRect(box2X, boxY, boxWidth, boxHeight, 1.5, 1.5, 'FD');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(6, 95, 70);
+      doc.text('TOTAL SALDO A FAVOR', box2X + 3.5, boxY + 4.5);
+      doc.setFontSize(10);
+      doc.setTextColor(4, 120, 87);
+      doc.text(`US$ ${totalCredit.toFixed(2).replace('.', ',')}`, box2X + 3.5, boxY + 9.5);
+      if (settings.exchangeRate > 0) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(6, 95, 70);
+        const bsCredit = calculateBS(totalCredit, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 });
+        doc.text(`≈ ${bsCredit} Bs.`, box2X + 3.5, boxY + 13.5);
+      }
+
+      // Caja 3: Neto Real
+      const box3X = box2X + boxWidth + 3;
+      doc.setFillColor(15, 23, 42);
+      doc.setDrawColor(30, 41, 59);
+      doc.roundedRect(box3X, boxY, boxWidth, boxHeight, 1.5, 1.5, 'FD');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(251, 146, 60);
+      doc.text(`NETO POR ${type === 'cxc' ? 'COBRAR' : 'PAGAR'}`, box3X + 3.5, boxY + 4.5);
+      doc.setFontSize(10);
+      doc.setTextColor(255, 255, 255);
+      doc.text(`US$ ${netTotal.toFixed(2).replace('.', ',')}`, box3X + 3.5, boxY + 9.5);
+      if (settings.exchangeRate > 0) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(203, 213, 225);
+        const bsNet = calculateBS(netTotal, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 });
+        doc.text(`≈ ${bsNet} Bs.`, box3X + 3.5, boxY + 13.5);
+      }
+
+      // Tabla de Datos
+      let currentY = 60;
+      drawTableHeader(currentY);
+      currentY += 7;
+
+      const activeList = sortedData.filter(item => item.totalPending > 0);
+
+      if (activeList.length === 0) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(148, 163, 184);
+        doc.text('No hay cuentas pendientes por cobrar registradas.', pageWidth / 2, currentY + 12, { align: 'center' });
+      }
+
+      activeList.forEach((group, idx) => {
+        const clientName = sanitizeText(group.name);
+        const bsFormatted = settings.exchangeRate > 0
+          ? `${calculateBS(group.totalPending, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 })} Bs.`
+          : '-';
+
+        if (viewMode === 'summary') {
+          const rowH = 6.8;
+          if (currentY + rowH > maxY) {
+            doc.addPage();
+            drawSubsequentPageHeader();
+            currentY = 22;
+            drawTableHeader(currentY);
+            currentY += 7;
+          }
+
+          if (idx % 2 === 1) {
+            doc.setFillColor(248, 250, 252);
+            doc.rect(margin, currentY, contentWidth, rowH, 'F');
+          }
+
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(7);
+          doc.setTextColor(100, 116, 139);
+          doc.text(String(idx + 1), margin + 3.5, currentY + 4.6, { align: 'center' });
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7.5);
+          doc.setTextColor(15, 23, 42);
+          const truncatedName = doc.splitTextToSize(clientName, 80)[0] || clientName;
+          doc.text(truncatedName, margin + 9, currentY + 4.6);
+
+          if (group.creditBalance > 0) {
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(7);
+            doc.setTextColor(5, 150, 105);
+            doc.text(`-US$ ${group.creditBalance.toFixed(2)}`, margin + 118, currentY + 4.6, { align: 'right' });
+          } else {
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(7);
+            doc.setTextColor(148, 163, 184);
+            doc.text('-', margin + 118, currentY + 4.6, { align: 'right' });
+          }
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7.8);
+          doc.setTextColor(15, 23, 42);
+          doc.text(`US$ ${group.totalPending.toFixed(2)}`, margin + 145, currentY + 4.6, { align: 'right' });
+
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(7);
+          doc.setTextColor(51, 65, 85);
+          doc.text(bsFormatted, margin + contentWidth - 3, currentY + 4.6, { align: 'right' });
+
+          doc.setDrawColor(241, 245, 249);
+          doc.line(margin, currentY + rowH, margin + contentWidth, currentY + rowH);
+          currentY += rowH;
+        } else {
+          // MODO DETALLADO
+          const headerRowH = 6.5;
+
+          if (currentY + 12 > maxY) {
+            doc.addPage();
+            drawSubsequentPageHeader();
+            currentY = 22;
+            drawTableHeader(currentY);
+            currentY += 7;
+          }
+
+          doc.setFillColor(241, 245, 249);
+          doc.rect(margin, currentY, contentWidth, headerRowH, 'F');
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7.5);
+          doc.setTextColor(71, 85, 105);
+          doc.text(String(idx + 1), margin + 3.5, currentY + 4.4, { align: 'center' });
+
+          doc.setTextColor(15, 23, 42);
+          doc.setFontSize(8);
+          doc.text(clientName, margin + 9, currentY + 4.4);
+
+          if (group.creditBalance > 0) {
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(7);
+            doc.setTextColor(5, 150, 105);
+            doc.text(`Favor: -US$ ${group.creditBalance.toFixed(2)}`, margin + 118, currentY + 4.4, { align: 'right' });
+          }
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(8);
+          doc.setTextColor(15, 23, 42);
+          doc.text(`US$ ${group.totalPending.toFixed(2)}`, margin + 145, currentY + 4.4, { align: 'right' });
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7);
+          doc.setTextColor(51, 65, 85);
+          doc.text(bsFormatted, margin + contentWidth - 3, currentY + 4.4, { align: 'right' });
+
+          currentY += headerRowH;
+
+          group.invoices.forEach((inv) => {
+            if (currentY + 5 > maxY) {
+              doc.addPage();
+              drawSubsequentPageHeader();
+              currentY = 22;
+              drawTableHeader(currentY);
+              currentY += 7;
+            }
+
+            const balance = (inv.totalUSD || 0) - (inv.paidAmountUSD || 0);
+            const invId = inv.id ? `#${inv.id.slice(-6).toUpperCase()}` : '#DOC';
+            const invDate = inv.date ? new Date(inv.date).toLocaleDateString('es-VE') : '';
+            const invBs = settings.exchangeRate > 0
+              ? `${calculateBS(balance, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 })} Bs.`
+              : '-';
+
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(6.8);
+            doc.setTextColor(100, 116, 139);
+            doc.text(`• ${invId}  (${invDate})`, margin + 14, currentY + 3.6);
+
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(7.2);
+            doc.setTextColor(71, 85, 105);
+            doc.text(`US$ ${balance.toFixed(2)}`, margin + 145, currentY + 3.6, { align: 'right' });
+
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(6.8);
+            doc.setTextColor(100, 116, 139);
+            doc.text(invBs, margin + contentWidth - 3, currentY + 3.6, { align: 'right' });
+
+            doc.setDrawColor(241, 245, 249);
+            doc.line(margin + 12, currentY + 4.8, margin + contentWidth, currentY + 4.8);
+            currentY += 4.8;
+          });
+
+          currentY += 1.5;
+        }
+      });
+
+      // Total General Final
+      if (activeList.length > 0) {
+        if (currentY + 10 > maxY) {
+          doc.addPage();
+          drawSubsequentPageHeader();
+          currentY = 22;
+        }
+
+        doc.setFillColor(15, 23, 42);
+        doc.rect(margin, currentY, contentWidth, 8, 'F');
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.8);
+        doc.setTextColor(249, 115, 22);
+        doc.text(`TOTAL GENERAL (${activeList.length} ${type === 'cxc' ? 'CLIENTES' : 'PROVEEDORES'})`, margin + 5, currentY + 5.2);
+
+        doc.setTextColor(255, 255, 255);
+        doc.text(`US$ ${totalOutstanding.toFixed(2).replace('.', ',')}`, margin + 145, currentY + 5.2, { align: 'right' });
+
+        if (settings.exchangeRate > 0) {
+          const totalBsFull = `${calculateBS(totalOutstanding, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 })} Bs.`;
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7.2);
+          doc.text(totalBsFull, margin + contentWidth - 3, currentY + 5.2, { align: 'right' });
+        }
+      }
+
+      // Numeración de páginas
+      const totalPages = doc.getNumberOfPages();
+      for (let p = 1; p <= totalPages; p++) {
+        doc.setPage(p);
+        doc.setDrawColor(226, 232, 240);
+        doc.setLineWidth(0.3);
+        doc.line(margin, 287, margin + contentWidth, 287);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(148, 163, 184);
+        doc.text(
+          `Página ${p} de ${totalPages} • D'Danez Gestor Pro - Reporte General de ${type === 'cxc' ? 'Cuentas por Cobrar' : 'Cuentas por Pagar'}`,
+          pageWidth / 2,
+          291.5,
+          { align: 'center' }
+        );
+        doc.text(
+          `Impreso: ${new Date().toLocaleDateString('es-VE')} ${new Date().toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' })}`,
+          pageWidth - margin,
+          291.5,
+          { align: 'right' }
+        );
+      }
+
+      const pdfBlob = doc.output('blob');
+      const pdfDataUri = doc.output('datauristring');
       const dateStr = new Date().toISOString().split('T')[0];
-      const fileName = `Reporte_General_${type.toUpperCase()}_${dateStr}.png`;
+      const fileName = `Reporte_${type.toUpperCase()}_${viewMode === 'summary' ? 'Resumen' : 'Detallado'}_${dateStr}.pdf`;
+
       const success = await downloadOrShareFile({
         fileName,
-        title: `${reportTitle} - ${new Date().toLocaleDateString('es-VE')}`,
-        dataUrl,
-        mimeType: 'image/png'
+        title: `${reportTitle} (${viewMode === 'summary' ? 'Resumen' : 'Detallado'})`,
+        blob: pdfBlob,
+        dataUrl: pdfDataUri,
+        mimeType: 'application/pdf',
+        dialogTitle: `Guardar o Compartir ${fileName}`,
+        preferShare: true
       });
 
       if (!success) {
-        alert('No se pudo guardar la imagen automáticamente. Intente tomar una captura de pantalla.');
+        doc.save(fileName);
       }
     } catch (err) {
-      console.error('Error al generar imagen:', err);
-      alert('No se pudo generar la imagen. Intente de nuevo.');
+      console.error('Error al generar PDF:', err);
+      alert('Hubo un inconveniente al generar el PDF del reporte. Intente de nuevo.');
     } finally {
       setIsGenerating(false);
     }
@@ -288,14 +626,21 @@ export const GlobalAccountsReportModal: React.FC<Props> = ({
         {/* Footer Actions */}
         <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row gap-3">
            <button 
-             onClick={handleDownloadImage} 
+             onClick={handleDownloadPDF} 
              disabled={isGenerating}
-             className="flex-1 bg-orange-600 hover:bg-orange-700 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50"
+             className="flex-1 bg-orange-600 hover:bg-orange-700 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
            >
-              {isGenerating ? 'Generando imagen nítida...' : <><Share2 size={20} /> Guardar o Compartir Reporte en Alta Calidad</>}
+              {isGenerating ? (
+                <>Generando documento PDF...</>
+              ) : (
+                <>
+                  <FileText size={20} />
+                  <span>Descargar / Compartir Reporte en PDF</span>
+                </>
+              )}
            </button>
            
-           <button onClick={onClose} className="sm:w-32 bg-slate-200 hover:bg-slate-300 text-slate-700 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all">
+           <button onClick={onClose} className="sm:w-32 bg-slate-200 hover:bg-slate-300 text-slate-700 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all cursor-pointer">
              Cerrar
            </button>
         </div>
