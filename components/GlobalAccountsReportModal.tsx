@@ -1,10 +1,11 @@
 
 import React, { useRef, useState, useMemo } from 'react';
-import { X, FileText, LayoutList, List, Download, Share2 } from 'lucide-react';
+import { X, FileText, LayoutList, List, Download, Share2, Printer } from 'lucide-react';
 import { CompanyInfo, AppSettings, Sale, Purchase } from '../types';
 import { jsPDF } from 'jspdf';
 import { calculateBS } from '../utils';
 import { downloadOrShareFile } from '../downloadHelper';
+import { Capacitor } from '@capacitor/core';
 
 interface GroupedData {
   id: string;
@@ -63,7 +64,7 @@ export const GlobalAccountsReportModal: React.FC<Props> = ({
     return txt.replace(/[\u{1F300}-\u{1F9FF}|\u{2600}-\u{26FF}|\u{2700}-\u{27BF}]/gu, '').trim();
   };
 
-  const handleDownloadPDF = async () => {
+  const handleExportPDF = async (action: 'download' | 'share' = 'download') => {
     setIsGenerating(true);
     try {
       await new Promise(resolve => setTimeout(resolve, 80));
@@ -409,25 +410,31 @@ export const GlobalAccountsReportModal: React.FC<Props> = ({
       const dateStr = new Date().toISOString().split('T')[0];
       const fileName = `Reporte_${type.toUpperCase()}_${viewMode === 'summary' ? 'Resumen' : 'Detallado'}_${dateStr}.pdf`;
 
-      const success = await downloadOrShareFile({
+      if (action === 'download' && !Capacitor.isNativePlatform()) {
+        doc.save(fileName);
+        return;
+      }
+
+      await downloadOrShareFile({
         fileName,
         title: `${reportTitle} (${viewMode === 'summary' ? 'Resumen' : 'Detallado'})`,
         blob: pdfBlob,
         dataUrl: pdfDataUri,
         mimeType: 'application/pdf',
-        dialogTitle: `Guardar o Compartir ${fileName}`,
-        preferShare: true
+        dialogTitle: action === 'share' ? `Compartir ${fileName}` : `Guardar ${fileName}`,
+        action,
+        preferShare: action === 'share'
       });
-
-      if (!success) {
-        doc.save(fileName);
-      }
     } catch (err) {
       console.error('Error al generar PDF:', err);
       alert('Hubo un inconveniente al generar el PDF del reporte. Intente de nuevo.');
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  const handlePrint = () => {
+    window.print();
   };
 
   const reportTitle = type === 'cxc' ? 'CUENTAS POR COBRAR GENERAL' : 'CUENTAS POR PAGAR GENERAL';
@@ -624,23 +631,36 @@ export const GlobalAccountsReportModal: React.FC<Props> = ({
         </div>
 
         {/* Footer Actions */}
-        <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row gap-3">
+        <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-wrap gap-2.5">
            <button 
-             onClick={handleDownloadPDF} 
+             onClick={() => handleExportPDF('download')} 
              disabled={isGenerating}
-             className="flex-1 bg-orange-600 hover:bg-orange-700 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+             className="flex-1 min-w-[140px] bg-slate-900 hover:bg-black text-white py-3.5 px-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg flex items-center justify-center gap-2.5 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
            >
-              {isGenerating ? (
-                <>Generando documento PDF...</>
-              ) : (
-                <>
-                  <FileText size={20} />
-                  <span>Descargar / Compartir Reporte en PDF</span>
-                </>
-              )}
+              <Download size={18} className="text-orange-500" />
+              <span>{isGenerating ? 'Generando...' : 'Descargar PDF'}</span>
+           </button>
+
+           <button 
+             onClick={() => handleExportPDF('share')} 
+             disabled={isGenerating}
+             className="flex-1 min-w-[140px] bg-orange-600 hover:bg-orange-700 text-white py-3.5 px-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg flex items-center justify-center gap-2.5 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+           >
+              <Share2 size={18} />
+              <span>Compartir / Enviar</span>
            </button>
            
-           <button onClick={onClose} className="sm:w-32 bg-slate-200 hover:bg-slate-300 text-slate-700 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all cursor-pointer">
+           <button 
+             onClick={handlePrint} 
+             disabled={isGenerating}
+             className="w-auto px-4 bg-slate-200 hover:bg-slate-300 text-slate-700 py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all cursor-pointer"
+             title="Imprimir"
+           >
+             <Printer size={18} />
+             <span className="hidden sm:inline">Imprimir</span>
+           </button>
+
+           <button onClick={onClose} className="w-auto px-5 bg-slate-200 hover:bg-slate-300 text-slate-700 py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest transition-all cursor-pointer">
              Cerrar
            </button>
         </div>

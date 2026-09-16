@@ -340,21 +340,58 @@ const Accounts: React.FC<Props> = ({ type, items, settings, company, onUpdate, c
                     </div>
 
                     {/* Bottom Row: Action Buttons */}
-                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-700/30">
+                    <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-slate-700/30">
+                      {type === 'cxc' && (
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const entity = customers?.find(c => c.id === group.id || c.name.toLowerCase() === group.name.toLowerCase());
+                            const netPending = Math.max(0, group.totalPending - group.creditBalance);
+                            const totalBs = settings.exchangeRate > 0 
+                              ? `${calculateBS(netPending, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 })} Bs.`
+                              : '';
+                            let message = `Hola *${group.name}*, le saludamos de *${company.name || "D'Danez Distribuciones"}*.\n`;
+                            message += `Le recordamos que presenta un saldo pendiente de *US$ ${netPending.toFixed(2).replace('.', ',')}*${totalBs ? ` (≈ ${totalBs})` : ''} correspondiente a ${group.invoices.length} documento(s).\n`;
+                            message += `\nPuede solicitar su estado de cuenta detallado o coordinar su pago respondiendo a este mensaje. ¡Muchas gracias!`;
+                            let cleanPhone = (entity?.phone || '').replace(/[^0-9]/g, '');
+                            if (cleanPhone.startsWith('0') && cleanPhone.length === 11) {
+                              cleanPhone = '58' + cleanPhone.slice(1);
+                            } else if (!cleanPhone.startsWith('58') && cleanPhone.length === 10) {
+                              cleanPhone = '58' + cleanPhone;
+                            }
+                            const waUrl = cleanPhone 
+                              ? `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(message)}`
+                              : `https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`;
+                            window.open(waUrl, '_blank');
+                          }}
+                          className="p-2.5 bg-emerald-500/10 hover:bg-emerald-600 text-emerald-400 hover:text-white rounded-xl transition-all flex items-center gap-1.5 text-[9px] font-bold uppercase"
+                          title="Enviar recordatorio por WhatsApp"
+                        >
+                          <MessageCircle size={14} />
+                          <span className="hidden sm:inline">WhatsApp</span>
+                        </button>
+                      )}
+
                       <button 
                         onClick={(e) => {
                           e.stopPropagation();
+                          const entity = type === 'cxc' 
+                            ? customers?.find(c => c.id === group.id || c.name.toLowerCase() === group.name.toLowerCase())
+                            : suppliers?.find(s => s.id === group.id || s.name.toLowerCase() === group.name.toLowerCase());
+
                           setPrintReportData({
                             entityName: group.name,
+                            entityPhone: entity?.phone || '',
                             invoices: group.invoices,
                             totalPending: group.totalPending,
                             creditBalance: group.creditBalance
                           });
                         }}
-                        className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-xl transition-all flex items-center gap-2"
-                        title="Imprimir Deuda Detallada"
+                        className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl transition-all flex items-center gap-1.5 text-[9px] font-bold uppercase"
+                        title="Ver / Descargar / Compartir Estado de Cuenta PDF"
                       >
-                        <Printer size={14} />
+                        <FileText size={14} className="text-orange-400" />
+                        <span className="hidden sm:inline">Estado de Cuenta</span>
                       </button>
                       <button 
                         onClick={async (e) => {
@@ -543,6 +580,7 @@ const Accounts: React.FC<Props> = ({ type, items, settings, company, onUpdate, c
           isOpen={!!printReportData}
           onClose={() => setPrintReportData(null)}
           entityName={printReportData.entityName}
+          entityPhone={printReportData.entityPhone}
           invoices={printReportData.invoices}
           totalPending={printReportData.totalPending}
           creditBalance={printReportData.creditBalance}

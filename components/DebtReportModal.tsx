@@ -1,6 +1,6 @@
 
 import React, { useRef, useState } from 'react';
-import { X, Printer, Download, FileText, Share2 } from 'lucide-react';
+import { X, Printer, Download, FileText, Share2, MessageCircle } from 'lucide-react';
 import { CompanyInfo, AppSettings, Sale, Purchase } from '../types';
 import * as htmlToImage from 'html-to-image';
 import { jsPDF } from 'jspdf';
@@ -12,6 +12,7 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   entityName: string;
+  entityPhone?: string;
   invoices: (Sale | Purchase)[];
   totalPending: number;
   creditBalance: number;
@@ -21,7 +22,7 @@ interface Props {
 }
 
 export const DebtReportModal: React.FC<Props> = ({ 
-  isOpen, onClose, entityName, invoices, totalPending, creditBalance, company, settings, type 
+  isOpen, onClose, entityName, entityPhone, invoices, totalPending, creditBalance, company, settings, type 
 }) => {
   const reportRef = useRef<HTMLDivElement>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -30,7 +31,6 @@ export const DebtReportModal: React.FC<Props> = ({
 
   const handlePrint = () => {
     if (Capacitor.isNativePlatform()) {
-      // En APK nativo, compartir la imagen permite enviar directamente a imprimir o guardar
       handleDownloadImage();
     } else {
       window.print();
@@ -53,7 +53,9 @@ export const DebtReportModal: React.FC<Props> = ({
         fileName,
         title: `${reportTitle} - ${entityName}`,
         dataUrl,
-        mimeType: 'image/png'
+        mimeType: 'image/png',
+        dialogTitle: `Compartir imagen de Estado de Cuenta`,
+        preferShare: true
       });
 
       if (!success) {
@@ -72,7 +74,60 @@ export const DebtReportModal: React.FC<Props> = ({
     return txt.replace(/[\u{1F300}-\u{1F9FF}|\u{2600}-\u{26FF}|\u{2700}-\u{27BF}]/gu, '').trim();
   };
 
-  const handleDownloadPDF = async () => {
+  const handleSendWhatsApp = () => {
+    const netPending = Math.max(0, totalPending - creditBalance);
+    const dateStr = new Date().toLocaleDateString('es-VE');
+    const bcvRate = settings.exchangeRate > 0 ? `${settings.exchangeRate.toFixed(2)} Bs/$` : 'N/A';
+    const totalBs = settings.exchangeRate > 0 
+      ? `${calculateBS(netPending, 'pending', undefined, settings.exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 })} Bs.`
+      : '';
+
+    let message = `📋 *${reportTitle}*\n`;
+    message += `🏢 *${company.name || "D'Danez Distribuciones"}*\n`;
+    message += `👤 *${entityLabel}:* ${entityName}\n`;
+    message += `📅 *Fecha:* ${dateStr}\n`;
+    message += `💵 *Tasa BCV:* ${bcvRate}\n\n`;
+
+    message += `📌 *RESUMEN DE CUENTA:*\n`;
+    message += `• *Total Deuda:* US$ ${totalPending.toFixed(2).replace('.', ',')}\n`;
+    if (creditBalance > 0) {
+      message += `• *Saldo a Favor:* US$ ${creditBalance.toFixed(2).replace('.', ',')}\n`;
+    }
+    message += `• *NETO PENDIENTE:* US$ ${netPending.toFixed(2).replace('.', ',')}${totalBs ? ` (≈ ${totalBs})` : ''}\n\n`;
+
+    message += `📄 *DOCUMENTOS PENDIENTES (${invoices.length}):*\n`;
+    invoices.forEach((inv, i) => {
+      const invId = inv.id ? `#${inv.id.slice(-6).toUpperCase()}` : `#DOC-${i+1}`;
+      const invBal = (inv.totalUSD || 0) - (inv.paidAmountUSD || 0);
+      const invDate = inv.date ? new Date(inv.date).toLocaleDateString('es-VE') : '';
+      message += `${i + 1}. *${invId}* (${invDate}) - Total: $${(inv.totalUSD || 0).toFixed(2)} | *Resta: $${invBal.toFixed(2)}*\n`;
+    });
+
+    if (company.bank || company.dni || company.mobilePhone || company.accountNumber) {
+      message += `\n💳 *DATOS DE PAGO:*\n`;
+      if (company.bank) message += `• Banco: ${company.bank}\n`;
+      if (company.mobilePhone) message += `• Pago Móvil: ${company.mobilePhone}\n`;
+      if (company.dni) message += `• CI/RIF: ${company.dni}\n`;
+      if (company.accountNumber) message += `• Cuenta: ${company.accountNumber}\n`;
+    }
+
+    message += `\n_Emitido desde Gestor Pro administrativo._`;
+
+    let cleanPhone = (entityPhone || '').replace(/[^0-9]/g, '');
+    if (cleanPhone.startsWith('0') && cleanPhone.length === 11) {
+      cleanPhone = '58' + cleanPhone.slice(1);
+    } else if (!cleanPhone.startsWith('58') && cleanPhone.length === 10) {
+      cleanPhone = '58' + cleanPhone;
+    }
+
+    const waUrl = cleanPhone 
+      ? `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(message)}`
+      : `https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`;
+
+    window.open(waUrl, '_blank');
+  };
+
+  const handleExportPDF = async (action: 'download' | 'share' = 'download') => {
     setIsGenerating(true);
     try {
       await new Promise(resolve => setTimeout(resolve, 80));
@@ -118,7 +173,7 @@ export const DebtReportModal: React.FC<Props> = ({
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(7);
       doc.setTextColor(100, 116, 139);
-      doc.text(entityLabel, margin + 5, 46);
+      doc.text(entityLabel + (entityPhone ? ` • TELF: ${entityPhone}` : ''), margin + 5, 46);
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
@@ -321,19 +376,21 @@ export const DebtReportModal: React.FC<Props> = ({
       const pdfDataUri = doc.output('datauristring');
       const fileName = `Estado_Cuenta_${entityName.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
 
-      const success = await downloadOrShareFile({
+      if (action === 'download' && !Capacitor.isNativePlatform()) {
+        doc.save(fileName);
+        return;
+      }
+
+      await downloadOrShareFile({
         fileName,
         title: `${reportTitle} - ${entityName}`,
         blob: pdfBlob,
         dataUrl: pdfDataUri,
         mimeType: 'application/pdf',
-        dialogTitle: `Guardar o Compartir ${fileName}`,
-        preferShare: true
+        dialogTitle: action === 'share' ? `Compartir ${fileName}` : `Guardar ${fileName}`,
+        action,
+        preferShare: action === 'share'
       });
-
-      if (!success) {
-        doc.save(fileName);
-      }
     } catch (err) {
       console.error('Error al generar PDF:', err);
       alert('Hubo un error al generar el PDF.');
@@ -462,26 +519,49 @@ export const DebtReportModal: React.FC<Props> = ({
         </div>
 
         <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col gap-2.5 print:hidden">
-           <button 
-             onClick={handleDownloadPDF} 
-             disabled={isGenerating}
-             className="w-full bg-orange-600 hover:bg-orange-700 text-white py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl flex items-center justify-center gap-2.5 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
-           >
-              {isGenerating ? 'Generando PDF...' : <><FileText size={18} /> Descargar / Compartir PDF</>}
-           </button>
+           <div className="flex gap-2">
+             <button 
+               onClick={() => handleExportPDF('download')} 
+               disabled={isGenerating}
+               className="flex-1 bg-slate-900 hover:bg-black text-white py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+             >
+                <Download size={18} className="text-orange-500" />
+                <span>{isGenerating ? 'Generando...' : 'Descargar PDF'}</span>
+             </button>
+
+             <button 
+               onClick={() => handleExportPDF('share')} 
+               disabled={isGenerating}
+               className="flex-1 bg-orange-600 hover:bg-orange-700 text-white py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+             >
+                <Share2 size={18} />
+                <span>Compartir PDF</span>
+             </button>
+           </div>
+
+           {type === 'cxc' && (
+             <button 
+               onClick={handleSendWhatsApp} 
+               disabled={isGenerating}
+               className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg flex items-center justify-center gap-2.5 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+             >
+                <MessageCircle size={18} />
+                <span>Enviar por WhatsApp {entityPhone ? `(${entityPhone})` : ''}</span>
+             </button>
+           )}
 
            <div className="flex gap-2">
               <button 
                 onClick={handleDownloadImage} 
                 disabled={isGenerating}
-                className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-3 rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-1.5 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-1.5 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
               >
-                 <Share2 size={15} /> Imagen
+                 <FileText size={15} /> Imagen PNG
               </button>
-              <button onClick={handlePrint} className="flex-1 bg-slate-700 hover:bg-slate-800 text-white py-3 rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-1.5 transition-all cursor-pointer">
+              <button onClick={handlePrint} className="flex-1 bg-slate-700 hover:bg-slate-800 text-white py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-1.5 transition-all cursor-pointer">
                  <Printer size={15} /> Imprimir
               </button>
-              <button onClick={onClose} className="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all cursor-pointer">
+              <button onClick={onClose} className="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all cursor-pointer">
                  Cerrar
               </button>
            </div>
