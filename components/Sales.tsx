@@ -228,7 +228,8 @@ const Sales: React.FC<Props> = ({ sales, setSales, customers, setCustomers, prod
 
             currentProducts[pIndex] = {
               ...currentProducts[pIndex],
-              stock: (currentProducts[pIndex].stock || 0) + qtyToRestore
+              stock: (currentProducts[pIndex].stock || 0) + qtyToRestore,
+              mermaTotal: (currentProducts[pIndex].mermaTotal || 0) + mermaQty
             };
             productsToUpdateMap.set(currentProducts[pIndex].id, currentProducts[pIndex]);
 
@@ -938,6 +939,11 @@ const Sales: React.FC<Props> = ({ sales, setSales, customers, setCustomers, prod
                     await dbService.put('products', updatedProduct);
                     
                     // Registrar movimiento de merma
+                    const cust = customers.find(c => c.id === selectedCustomerId) || 
+                      (editingSale?.customerId ? customers.find(c => c.id === editingSale.customerId) : undefined);
+                    const custId = cust?.id || selectedCustomerId || editingSale?.customerId || undefined;
+                    const custName = cust?.name || editingSale?.customerName || 'Cliente';
+
                     await dbService.put('movements', {
                       id: crypto.randomUUID(),
                       date: new Date(saleDate).toISOString(),
@@ -946,7 +952,10 @@ const Sales: React.FC<Props> = ({ sales, setSales, customers, setCustomers, prod
                       type: 'merma',
                       quantity: -showMermaPrompt.diff,
                       stockAfter: (product.stock || 0) - showMermaPrompt.diff,
-                      relatedId: editingSale?.id
+                      relatedId: editingSale?.id,
+                      customerId: custId,
+                      customerName: custName,
+                      reason: 'Reducción en Factura de Venta'
                     });
 
                     // Acumular para que executeSaleSave sepa que no debe restaurar esto al stock

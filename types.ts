@@ -73,6 +73,7 @@ export interface Movement {
   customerName?: string;
   promotionId?: string;
   promotionName?: string;
+  reason?: string;
 }
 
 export interface Customer {

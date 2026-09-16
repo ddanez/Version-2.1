@@ -664,7 +664,7 @@ const App: React.FC = () => {
       <main className="flex-1 overflow-y-auto bg-[#0f172a]">
         <div className="max-w-6xl mx-auto p-4 md:p-8 pb-24 md:pb-8">
           {activeTab === AppTab.DASHBOARD && <Dashboard sales={sales} purchases={purchases} expenses={expenses} products={products} settings={settings} movements={movements} />}
-          {activeTab === AppTab.INVENTORY && <Inventory products={products} setProducts={setProducts} settings={settings} />}
+          {activeTab === AppTab.INVENTORY && <Inventory products={products} setProducts={setProducts} settings={settings} customers={customers} />}
           {activeTab === AppTab.SALES && <Sales sales={sales} setSales={setSales} customers={customers} setCustomers={setCustomers} products={products} setProducts={setProducts} sellers={sellers} settings={settings} company={company} />}
           {activeTab === AppTab.PURCHASES && <Purchases purchases={purchases} setPurchases={setPurchases} suppliers={suppliers} setSuppliers={setSuppliers} products={products} setProducts={setProducts} settings={settings} />}
           {activeTab === AppTab.EXPENSES && <Expenses expenses={expenses} setExpenses={setExpenses} settings={settings} />}

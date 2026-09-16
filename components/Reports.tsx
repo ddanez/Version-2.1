@@ -26,7 +26,12 @@ import {
   Tag,
   Award,
   CheckCircle2,
-  Filter
+  Filter,
+  ChevronDown,
+  ChevronUp,
+  Percent,
+  UserCheck,
+  RotateCcw
 } from 'lucide-react';
 import { Sale, Purchase, AppSettings, Product, Expense, Customer, Supplier, Movement, Promotion, CustomerPromotion } from '../types';
 import { dbService } from '../db';
@@ -72,6 +77,9 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
   const [promoViewMode, setPromoViewMode] = useState<'by_customer' | 'chronological'>('by_customer');
   const [localPromotions, setLocalPromotions] = useState<Promotion[]>(promotions || []);
   const [localCustomerPromos, setLocalCustomerPromos] = useState<CustomerPromotion[]>(customerPromotions || []);
+  const [mermaViewTab, setMermaViewTab] = useState<'by_customer' | 'by_product' | 'movements_log'>('by_customer');
+  const [mermaCustomerFilter, setMermaCustomerFilter] = useState<string>('all');
+  const [expandedMermaCustomer, setExpandedMermaCustomer] = useState<string | null>(null);
 
   useEffect(() => {
     if (promotions && promotions.length > 0) {
@@ -278,133 +286,755 @@ const Reports: React.FC<Props> = ({ sales, purchases, expenses, products, custom
         break;
 
       case 'product_waste':
-        title = "Merma de Productos";
-        const filteredMovements = movements.filter(m => 
-          m.type === 'merma' && 
-          m.date.split('T')[0] >= startDate && 
-          m.date.split('T')[0] <= endDate
+        title = "Reporte de Merma y Pérdidas";
+
+        // Enriquecer movimientos de merma para asociar cliente incluso si proviene de una venta histórica
+        const enrichedMermaMovements = movements
+          .filter(m => m.type === 'merma')
+          .map(m => {
+            let custId = m.customerId;
+            let custName = m.customerName;
+            if (!custId && m.relatedId) {
+              const relSale = sales.find(s => s.id === m.relatedId);
+              if (relSale) {
+                custId = relSale.customerId;
+                custName = relSale.customerName;
+              }
+            }
+            const dateOnly = m.date ? m.date.split('T')[0] : '';
+            return {
+              ...m,
+              dateOnly,
+              computedCustomerId: custId || 'almacen',
+              computedCustomerName: custName || 'Merma Interna / Almacén'
+            };
+          });
+
+        // 1. Filtrar por período de tiempo
+        const dateFilteredMerma = enrichedMermaMovements.filter(m => 
+          m.dateOnly >= startDate && m.dateOnly <= endDate
         );
 
-        const wasteByProduct = filteredMovements.reduce((acc: { [key: string]: number }, m) => {
-          acc[m.productId] = (acc[m.productId] || 0) + Math.abs(m.quantity);
-          return acc;
-        }, {});
+        // 2. Filtrar por cliente si hay filtro individual activo
+        const finalFilteredMerma = mermaCustomerFilter === 'all' 
+          ? dateFilteredMerma 
+          : dateFilteredMerma.filter(m => m.computedCustomerId === mermaCustomerFilter);
 
-        const wasteProducts = products
-          .filter(p => wasteByProduct[p.id] > 0)
-          .map(p => ({
-            ...p,
-            periodWaste: wasteByProduct[p.id]
-          }))
-          .sort((a, b) => b.periodWaste - a.periodWaste);
+        // Totales del período seleccionado (para cálculos porcentuales)
+        const totalPeriodMermaUnits = dateFilteredMerma.reduce((sum, m) => sum + Math.abs(m.quantity), 0);
+        const totalPeriodMermaUSD = dateFilteredMerma.reduce((sum, m) => {
+          const prod = products.find(p => p.id === m.productId);
+          const cost = prod?.costUSD || 0;
+          return sum + (Math.abs(m.quantity) * cost);
+        }, 0);
+        const totalPeriodMermaBS = calculateBS(totalPeriodMermaUSD, 'pending', undefined, settings.exchangeRate);
 
-        // Global statistics for the period
-        const totalWasteQty = wasteProducts.reduce((sum, p) => sum + p.periodWaste, 0);
-        const totalSoldQty = movements
+        // Salidas totales (ventas + merma) en el período para porcentaje global
+        const totalSoldUnitsInPeriod = movements
           .filter(m => m.type === 'sale' && m.date.split('T')[0] >= startDate && m.date.split('T')[0] <= endDate)
           .reduce((sum, m) => sum + Math.abs(m.quantity), 0);
-        const globalWastePct = (totalWasteQty + totalSoldQty) > 0 
-          ? (totalWasteQty / (totalWasteQty + totalSoldQty)) * 100 
-          : 0;
+        const globalPeriodOutflow = totalPeriodMermaUnits + totalSoldUnitsInPeriod;
+        const globalMermaPct = globalPeriodOutflow > 0 ? (totalPeriodMermaUnits / globalPeriodOutflow) * 100 : 0;
 
-        const totalWasteUSDVal = wasteProducts.reduce((sum, p) => sum + (p.periodWaste * p.costUSD), 0);
-        const totalWasteBSVal = calculateBS(totalWasteUSDVal, 'pending', undefined, settings.exchangeRate);
+        // Porcentaje atribuible a clientes vs almacén
+        const clientMermaUnits = dateFilteredMerma
+          .filter(m => m.computedCustomerId !== 'almacen')
+          .reduce((sum, m) => sum + Math.abs(m.quantity), 0);
+        const clientMermaPct = totalPeriodMermaUnits > 0 ? (clientMermaUnits / totalPeriodMermaUnits) * 100 : 0;
+        const warehouseMermaPct = totalPeriodMermaUnits > 0 ? 100 - clientMermaPct : 0;
+
+        // Agrupación por Clientes para la pestaña "Por Clientes"
+        const customerWasteMap: { [key: string]: { 
+          id: string; 
+          name: string; 
+          rif?: string;
+          phone?: string;
+          units: number; 
+          costUSD: number; 
+          products: { [prodId: string]: { name: string; units: number; costUSD: number; reason?: string } } 
+        } } = {};
+
+        finalFilteredMerma.forEach(m => {
+          const cId = m.computedCustomerId;
+          const cName = m.computedCustomerName;
+          const prod = products.find(p => p.id === m.productId);
+          const cost = prod?.costUSD || 0;
+          const units = Math.abs(m.quantity);
+          const costTotal = units * cost;
+
+          if (!customerWasteMap[cId]) {
+            const customerObj = customers.find(c => c.id === cId);
+            customerWasteMap[cId] = {
+              id: cId,
+              name: cName,
+              rif: customerObj?.rif,
+              phone: customerObj?.phone,
+              units: 0,
+              costUSD: 0,
+              products: {}
+            };
+          }
+
+          customerWasteMap[cId].units += units;
+          customerWasteMap[cId].costUSD += costTotal;
+
+          if (!customerWasteMap[cId].products[m.productId]) {
+            customerWasteMap[cId].products[m.productId] = {
+              name: m.productName || prod?.name || 'Producto Desconocido',
+              units: 0,
+              costUSD: 0,
+              reason: m.reason
+            };
+          }
+          customerWasteMap[cId].products[m.productId].units += units;
+          customerWasteMap[cId].products[m.productId].costUSD += costTotal;
+          if (m.reason) {
+            customerWasteMap[cId].products[m.productId].reason = m.reason;
+          }
+        });
+
+        const customerWasteList = Object.values(customerWasteMap).sort((a, b) => b.units - a.units);
+
+        // Agrupación por Productos para la pestaña "Por Productos"
+        const productWasteMap: { [key: string]: {
+          id: string;
+          name: string;
+          category: string;
+          sku: string;
+          costUSD: number;
+          units: number;
+          totalCostUSD: number;
+          clientBreakdown: { [cName: string]: number };
+        } } = {};
+
+        finalFilteredMerma.forEach(m => {
+          const prod = products.find(p => p.id === m.productId);
+          const cost = prod?.costUSD || 0;
+          const units = Math.abs(m.quantity);
+          const costTotal = units * cost;
+
+          if (!productWasteMap[m.productId]) {
+            productWasteMap[m.productId] = {
+              id: m.productId,
+              name: m.productName || prod?.name || 'Producto Desconocido',
+              category: prod?.category || 'Otros',
+              sku: prod?.sku || '',
+              costUSD: cost,
+              units: 0,
+              totalCostUSD: 0,
+              clientBreakdown: {}
+            };
+          }
+
+          productWasteMap[m.productId].units += units;
+          productWasteMap[m.productId].totalCostUSD += costTotal;
+          productWasteMap[m.productId].clientBreakdown[m.computedCustomerName] = 
+            (productWasteMap[m.productId].clientBreakdown[m.computedCustomerName] || 0) + units;
+        });
+
+        const productWasteList = Object.values(productWasteMap).sort((a, b) => b.units - a.units);
+
+        // Helper para botones rápidos de rango de fechas
+        const handleQuickRange = (type: 'today' | 'week' | 'month' | 'last30' | 'all') => {
+          const now = new Date();
+          const todayStr = now.toISOString().split('T')[0];
+          if (type === 'today') {
+            setStartDate(todayStr);
+            setEndDate(todayStr);
+          } else if (type === 'week') {
+            const d = new Date(now);
+            const day = d.getDay();
+            const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+            d.setDate(diff);
+            setStartDate(d.toISOString().split('T')[0]);
+            setEndDate(todayStr);
+          } else if (type === 'month') {
+            const first = new Date(now.getFullYear(), now.getMonth(), 1);
+            setStartDate(first.toISOString().split('T')[0]);
+            setEndDate(todayStr);
+          } else if (type === 'last30') {
+            const past = new Date(now);
+            past.setDate(past.getDate() - 30);
+            setStartDate(past.toISOString().split('T')[0]);
+            setEndDate(todayStr);
+          } else if (type === 'all') {
+            setStartDate('2020-01-01');
+            setEndDate(todayStr);
+          }
+        };
+
+        // Exportación de Merma a CSV
+        const exportMermaCSV = () => {
+          let csvRows: string[][] = [];
+          if (mermaViewTab === 'by_customer') {
+            csvRows.push(['REPORTE DE MERMA POR CLIENTE - PERIODO:', `${startDate} a ${endDate}`]);
+            csvRows.push(['Cliente', 'RIF', 'Unidades Mermadas', '% del Total Merma Periodo', 'Costo USD', 'Costo BS']);
+            customerWasteList.forEach(c => {
+              const pct = totalPeriodMermaUnits > 0 ? (c.units / totalPeriodMermaUnits) * 100 : 0;
+              const bsVal = calculateBS(c.costUSD, 'pending', undefined, settings.exchangeRate);
+              csvRows.push([
+                `"${c.name}"`,
+                `"${c.rif || 'N/A'}"`,
+                c.units.toString(),
+                `${pct.toFixed(2)}%`,
+                c.costUSD.toFixed(2),
+                bsVal.toFixed(2)
+              ]);
+            });
+          } else if (mermaViewTab === 'by_product') {
+            csvRows.push(['REPORTE DE MERMA POR PRODUCTO - PERIODO:', `${startDate} a ${endDate}`]);
+            csvRows.push(['Producto', 'SKU', 'Categoria', 'Unidades Mermadas', '% del Total Merma Periodo', 'Costo Unitario USD', 'Costo Total USD', 'Costo Total BS']);
+            productWasteList.forEach(p => {
+              const pct = totalPeriodMermaUnits > 0 ? (p.units / totalPeriodMermaUnits) * 100 : 0;
+              const bsVal = calculateBS(p.totalCostUSD, 'pending', undefined, settings.exchangeRate);
+              csvRows.push([
+                `"${p.name}"`,
+                `"${p.sku}"`,
+                `"${p.category}"`,
+                p.units.toString(),
+                `${pct.toFixed(2)}%`,
+                p.costUSD.toFixed(2),
+                p.totalCostUSD.toFixed(2),
+                bsVal.toFixed(2)
+              ]);
+            });
+          } else {
+            csvRows.push(['HISTORIAL DE MOVIMIENTOS DE MERMA - PERIODO:', `${startDate} a ${endDate}`]);
+            csvRows.push(['Fecha', 'Producto', 'Cliente', 'Cantidad', 'Costo Est. USD', 'Motivo / Causa']);
+            finalFilteredMerma.forEach(m => {
+              const prod = products.find(p => p.id === m.productId);
+              const cost = prod?.costUSD || 0;
+              const units = Math.abs(m.quantity);
+              csvRows.push([
+                m.date ? new Date(m.date).toLocaleString() : '',
+                `"${m.productName || prod?.name || ''}"`,
+                `"${m.computedCustomerName}"`,
+                units.toString(),
+                (units * cost).toFixed(2),
+                `"${m.reason || 'Sin especificar'}"`
+              ]);
+            });
+          }
+
+          const csvContent = csvRows.map(e => e.join(',')).join('\n');
+          const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+          const link = document.createElement('a');
+          link.href = URL.createObjectURL(blob);
+          link.download = `reporte_merma_${mermaViewTab}_${startDate}_${endDate}.csv`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        };
         
         content = (
-          <div className="space-y-4">
-            <div className="bg-[#1e293b] p-6 rounded-2xl border border-slate-700 flex flex-col md:flex-row items-center gap-4">
-              <div className="flex-1 w-full">
-                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-2">Desde</label>
-                <input 
-                  type="date" 
-                  value={startDate} 
-                  onChange={(e) => setStartDate(e.target.value)}
-                  className="w-full bg-[#0f172a] border border-slate-700 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-orange-500" 
-                />
+          <div className="space-y-4 animate-in fade-in duration-300">
+            {/* Controles de Filtros de Período y Cliente */}
+            <div className="bg-[#1e293b] p-5 rounded-2xl border border-slate-700 space-y-4 shadow-xl">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <Calendar size={18} className="text-orange-400" />
+                  <span className="text-xs font-black uppercase tracking-wider text-white">Filtro de Período de Tiempo</span>
+                </div>
+                
+                {/* Botones de selección rápida de período */}
+                <div className="flex flex-wrap gap-1.5">
+                  <button 
+                    type="button" 
+                    onClick={() => handleQuickRange('today')}
+                    className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider bg-[#0f172a] hover:bg-orange-500/20 text-slate-300 hover:text-orange-400 rounded-lg border border-slate-700 transition-colors"
+                  >
+                    Hoy
+                  </button>
+                  <button 
+                    type="button" 
+                    onClick={() => handleQuickRange('week')}
+                    className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider bg-[#0f172a] hover:bg-orange-500/20 text-slate-300 hover:text-orange-400 rounded-lg border border-slate-700 transition-colors"
+                  >
+                    Esta Semana
+                  </button>
+                  <button 
+                    type="button" 
+                    onClick={() => handleQuickRange('month')}
+                    className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider bg-[#0f172a] hover:bg-orange-500/20 text-slate-300 hover:text-orange-400 rounded-lg border border-slate-700 transition-colors"
+                  >
+                    Este Mes
+                  </button>
+                  <button 
+                    type="button" 
+                    onClick={() => handleQuickRange('last30')}
+                    className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider bg-[#0f172a] hover:bg-orange-500/20 text-slate-300 hover:text-orange-400 rounded-lg border border-slate-700 transition-colors"
+                  >
+                    Últimos 30 Días
+                  </button>
+                  <button 
+                    type="button" 
+                    onClick={() => handleQuickRange('all')}
+                    className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider bg-[#0f172a] hover:bg-orange-500/20 text-slate-300 hover:text-orange-400 rounded-lg border border-slate-700 transition-colors"
+                  >
+                    Todo
+                  </button>
+                </div>
               </div>
-              <div className="flex-1 w-full">
-                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-2">Hasta</label>
-                <input 
-                  type="date" 
-                  value={endDate} 
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="w-full bg-[#0f172a] border border-slate-700 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-orange-500" 
-                />
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1 block mb-1">Fecha Desde</label>
+                  <input 
+                    type="date" 
+                    value={startDate} 
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="w-full bg-[#0f172a] border border-slate-700 rounded-xl p-2.5 text-xs font-bold text-white outline-none focus:border-orange-500" 
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1 block mb-1">Fecha Hasta</label>
+                  <input 
+                    type="date" 
+                    value={endDate} 
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="w-full bg-[#0f172a] border border-slate-700 rounded-xl p-2.5 text-xs font-bold text-white outline-none focus:border-orange-500" 
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1 block mb-1">Filtrar por Cliente</label>
+                  <select
+                    value={mermaCustomerFilter}
+                    onChange={(e) => setMermaCustomerFilter(e.target.value)}
+                    className="w-full bg-[#0f172a] border border-slate-700 rounded-xl p-2.5 text-xs font-bold text-white outline-none focus:border-orange-500"
+                  >
+                    <option value="all">Todos los Clientes y Almacén</option>
+                    <option value="almacen">Sólo Merma Interna / Almacén</option>
+                    {customers.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
             </div>
 
-            {/* Premium Period Summary Cards */}
-            {wasteProducts.length > 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="bg-[#1e293b]/50 p-4 rounded-2xl border border-slate-800">
-                  <p className="text-[8px] font-black text-rose-500 uppercase tracking-widest leading-none mb-1">Costo Total de Merma</p>
-                  <p className="text-lg font-black text-white leading-none">${totalWasteUSDVal.toFixed(2)}</p>
-                  <p className="text-[8px] font-bold text-slate-400 mt-1 uppercase">Bs. {totalWasteBSVal.toLocaleString('es-VE', { minimumFractionDigits: 2 })}</p>
+            {/* Tarjetas de Resumen y Porcentajes del Período */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="bg-[#1e293b] p-4 rounded-2xl border border-slate-800 shadow-md">
+                <p className="text-[8px] font-black text-rose-500 uppercase tracking-widest leading-none mb-1">Costo Total Merma</p>
+                <p className="text-xl font-black text-white leading-tight">${totalPeriodMermaUSD.toFixed(2)}</p>
+                <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase">Bs. {totalPeriodMermaBS.toLocaleString('es-VE', { minimumFractionDigits: 2 })}</p>
+                <div className="mt-2 pt-2 border-t border-slate-800/80 text-[8px] text-slate-400 uppercase">
+                  Período: {startDate} al {endDate}
                 </div>
-                <div className="bg-[#1e293b]/50 p-4 rounded-2xl border border-slate-800">
-                  <p className="text-[8px] font-black text-amber-500 uppercase tracking-widest leading-none mb-1">Unidades Mermadas</p>
-                  <p className="text-lg font-black text-white leading-none">{totalWasteQty % 1 === 0 ? totalWasteQty : totalWasteQty.toFixed(1)} uni.</p>
-                  <p className="text-[8px] font-bold text-slate-400 mt-1 uppercase">En el período seleccionado</p>
+              </div>
+
+              <div className="bg-[#1e293b] p-4 rounded-2xl border border-slate-800 shadow-md">
+                <p className="text-[8px] font-black text-amber-500 uppercase tracking-widest leading-none mb-1">Unidades Mermadas</p>
+                <p className="text-xl font-black text-white leading-tight">{totalPeriodMermaUnits % 1 === 0 ? totalPeriodMermaUnits : totalPeriodMermaUnits.toFixed(2)} <span className="text-xs text-slate-400 font-bold">uni.</span></p>
+                <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase">
+                  {dateFilteredMerma.length} registros en total
+                </p>
+                <div className="mt-2 pt-2 border-t border-slate-800/80 text-[8px] text-slate-400 uppercase">
+                  {mermaCustomerFilter !== 'all' ? 'Filtrado por cliente' : 'Incluye almacén y clientes'}
                 </div>
-                <div className="bg-[#1e293b]/50 p-4 rounded-2xl border border-slate-800">
-                  <p className="text-[8px] font-black text-emerald-400 uppercase tracking-widest leading-none mb-1">% de Merma Global</p>
-                  <p className="text-lg font-black text-emerald-400 leading-none">{globalWastePct.toFixed(1)}%</p>
-                  <p className="text-[8px] font-bold text-slate-400 mt-1 uppercase">De salidas totales del período</p>
+              </div>
+
+              <div className="bg-[#1e293b] p-4 rounded-2xl border border-slate-800 shadow-md">
+                <p className="text-[8px] font-black text-emerald-400 uppercase tracking-widest leading-none mb-1">% Merma s/ Salidas</p>
+                <p className="text-xl font-black text-emerald-400 leading-tight">{globalMermaPct.toFixed(1)}%</p>
+                <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase">
+                  De {globalPeriodOutflow % 1 === 0 ? globalPeriodOutflow : globalPeriodOutflow.toFixed(1)} salidas totales
+                </p>
+                <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
+                  <div 
+                    className={`h-full rounded-full ${globalMermaPct > 10 ? 'bg-rose-500' : globalMermaPct > 5 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                    style={{ width: `${Math.min(100, globalMermaPct)}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="bg-[#1e293b] p-4 rounded-2xl border border-slate-800 shadow-md">
+                <p className="text-[8px] font-black text-indigo-400 uppercase tracking-widest leading-none mb-1">Distribución Período</p>
+                <div className="flex items-center justify-between text-xs font-black mt-1 text-white">
+                  <span>Clientes: <strong className="text-orange-400">{clientMermaPct.toFixed(0)}%</strong></span>
+                  <span>Almacén: <strong className="text-slate-400">{warehouseMermaPct.toFixed(0)}%</strong></span>
+                </div>
+                <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden flex">
+                  <div className="h-full bg-orange-500" style={{ width: `${clientMermaPct}%` }} />
+                  <div className="h-full bg-slate-600" style={{ width: `${warehouseMermaPct}%` }} />
+                </div>
+                <p className="text-[8px] text-slate-400 mt-2 uppercase truncate">
+                  {customerWasteList.length} clientes con incidencia
+                </p>
+              </div>
+            </div>
+
+            {/* Pestañas de Vista y Botón de Exportación */}
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+              <div className="flex bg-[#1e293b] p-1 rounded-xl border border-slate-800 w-full sm:w-auto">
+                <button
+                  type="button"
+                  onClick={() => setMermaViewTab('by_customer')}
+                  className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 ${
+                    mermaViewTab === 'by_customer' ? 'bg-orange-500 text-white shadow-md' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Users size={14} />
+                  <span>Por Clientes</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMermaViewTab('by_product')}
+                  className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 ${
+                    mermaViewTab === 'by_product' ? 'bg-orange-500 text-white shadow-md' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Package size={14} />
+                  <span>Por Productos</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMermaViewTab('movements_log')}
+                  className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 ${
+                    mermaViewTab === 'movements_log' ? 'bg-orange-500 text-white shadow-md' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <ClipboardList size={14} />
+                  <span>Movimientos ({finalFilteredMerma.length})</span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={exportMermaCSV}
+                className="bg-[#1e293b] hover:bg-slate-800 text-slate-200 border border-slate-700 px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all active:scale-95"
+                title="Descargar este reporte en CSV / Excel"
+              >
+                <Download size={14} className="text-orange-400" />
+                <span>Exportar CSV</span>
+              </button>
+            </div>
+
+            {/* TABLA 1: POR CLIENTES */}
+            {mermaViewTab === 'by_customer' && (
+              <div className="bg-[#0f172a] rounded-2xl overflow-hidden border border-slate-800 shadow-xl">
+                <div className="p-4 bg-[#1e293b]/50 border-b border-slate-800 flex justify-between items-center">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-white">
+                      Merma Agrupada por Clientes
+                    </h3>
+                    <p className="text-[9px] font-bold text-slate-400 uppercase">
+                      Porcentajes calculados respecto al total de merma del período ({totalPeriodMermaUnits % 1 === 0 ? totalPeriodMermaUnits : totalPeriodMermaUnits.toFixed(2)} uni.)
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-black px-2.5 py-1 rounded-md bg-orange-500/10 text-orange-400 border border-orange-500/20 uppercase">
+                    {customerWasteList.length} Clientes / Entidades
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#1e293b] text-slate-400 font-black uppercase tracking-widest text-[9px]">
+                      <tr>
+                        <th className="p-3.5">Cliente</th>
+                        <th className="p-3.5 text-center">Unidades Mermadas</th>
+                        <th className="p-3.5 text-center" title="Porcentaje que este cliente representa sobre toda la merma ocurrida en el periodo seleccionado">
+                          % del Periodo
+                        </th>
+                        <th className="p-3.5 text-right">Costo Estimado (USD)</th>
+                        <th className="p-3.5 text-right">Costo Estimado (BS)</th>
+                        <th className="p-3.5 text-center">Detalle</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {customerWasteList.map((c) => {
+                        const pctPeriod = totalPeriodMermaUnits > 0 ? (c.units / totalPeriodMermaUnits) * 100 : 0;
+                        const bsVal = calculateBS(c.costUSD, 'pending', undefined, settings.exchangeRate);
+                        const isExpanded = expandedMermaCustomer === c.id;
+                        const productEntries = Object.values(c.products);
+
+                        return (
+                          <React.Fragment key={c.id}>
+                            <tr className="hover:bg-slate-800/40 transition-colors">
+                              <td className="p-3.5">
+                                <div className="font-bold text-white uppercase flex items-center gap-2">
+                                  {c.id === 'almacen' ? (
+                                    <span className="p-1 rounded bg-slate-700 text-slate-300"><Package size={12}/></span>
+                                  ) : (
+                                    <span className="p-1 rounded bg-orange-500/20 text-orange-400"><Users size={12}/></span>
+                                  )}
+                                  <div>
+                                    <p className="leading-tight">{c.name}</p>
+                                    {c.rif && <p className="text-[8px] text-slate-500 font-mono">{c.rif}</p>}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="p-3.5 text-center font-black text-rose-400 text-sm">
+                                {c.units % 1 === 0 ? c.units : c.units.toFixed(2)}
+                              </td>
+                              <td className="p-3.5 text-center">
+                                <div className="inline-flex flex-col items-center">
+                                  <span className={`text-xs font-black ${pctPeriod > 30 ? 'text-rose-500' : pctPeriod > 15 ? 'text-amber-500' : 'text-emerald-400'}`}>
+                                    {pctPeriod.toFixed(1)}%
+                                  </span>
+                                  <div className="w-16 bg-slate-800 h-1 rounded-full mt-1 overflow-hidden">
+                                    <div 
+                                      className={`h-full rounded-full ${pctPeriod > 30 ? 'bg-rose-500' : pctPeriod > 15 ? 'bg-amber-500' : 'bg-emerald-400'}`}
+                                      style={{ width: `${Math.min(100, pctPeriod)}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="p-3.5 text-right font-black text-slate-300">
+                                ${c.costUSD.toFixed(2)}
+                              </td>
+                              <td className="p-3.5 text-right font-black text-emerald-400">
+                                Bs. {bsVal.toLocaleString('es-VE', { minimumFractionDigits: 2 })}
+                              </td>
+                              <td className="p-3.5 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedMermaCustomer(isExpanded ? null : c.id)}
+                                  className="p-1.5 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg transition-colors inline-flex items-center gap-1 text-[9px] font-bold uppercase"
+                                  title="Ver productos mermados por este cliente"
+                                >
+                                  <span>{productEntries.length} prod.</span>
+                                  {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                                </button>
+                              </td>
+                            </tr>
+
+                            {/* Desglose de productos mermados al expandir cliente */}
+                            {isExpanded && (
+                              <tr className="bg-[#0b1120]">
+                                <td colSpan={6} className="p-4 pl-10 border-t border-b border-slate-800/80">
+                                  <div className="space-y-2">
+                                    <p className="text-[9px] font-black uppercase tracking-wider text-orange-400 flex items-center gap-1.5">
+                                      <Package size={12} /> Productos Mermados por {c.name} en el Período:
+                                    </p>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                                      {productEntries.map((prod, pIdx) => {
+                                        const prodPct = c.units > 0 ? (prod.units / c.units) * 100 : 0;
+                                        return (
+                                          <div key={pIdx} className="bg-[#1e293b] p-2.5 rounded-xl border border-slate-700/60 flex justify-between items-center text-xs">
+                                            <div className="pr-2">
+                                              <p className="font-bold text-white uppercase text-[11px] leading-tight truncate max-w-[150px]">{prod.name}</p>
+                                              {prod.reason && (
+                                                <p className="text-[7.5px] text-rose-400/90 font-medium italic mt-0.5 truncate max-w-[150px]">{prod.reason}</p>
+                                              )}
+                                            </div>
+                                            <div className="text-right whitespace-nowrap">
+                                              <span className="font-black text-rose-400 text-xs block">
+                                                {prod.units % 1 === 0 ? prod.units : prod.units.toFixed(2)} uni.
+                                              </span>
+                                              <span className="text-[8px] font-bold text-slate-400 uppercase">
+                                                {prodPct.toFixed(0)}% del cliente
+                                              </span>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+
+                      {customerWasteList.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-500 font-bold uppercase italic">
+                            No hay merma registrada para el período y filtros seleccionados.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
 
-            <div className="bg-[#0f172a] rounded-2xl overflow-hidden border border-slate-800">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[#1e293b] text-slate-400 font-black uppercase tracking-widest text-[9px]">
-                  <tr>
-                    <th className="p-4">Producto</th>
-                    <th className="p-4 text-right">Cant. Merma</th>
-                    <th className="p-4 text-right" title="Porcentaje de unidades mermadas sobre la salida total (Ventas + Merma) de este producto en el período">% Merma / Salidas</th>
-                    <th className="p-4 text-right">Valor Est. (USD)</th>
-                    <th className="p-4 text-right">Valor Est. (BS)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800">
-                  {wasteProducts.map((p, i) => {
-                    const valorUSD = p.periodWaste * p.costUSD;
-                    const valorBS = calculateBS(valorUSD, 'pending', undefined, settings.exchangeRate);
-                    
-                    const soldQty = movements
-                      .filter(m => m.productId === p.id && m.type === 'sale' && m.date.split('T')[0] >= startDate && m.date.split('T')[0] <= endDate)
-                      .reduce((sum, m) => sum + Math.abs(m.quantity), 0);
-                    
-                    const totalOutflow = p.periodWaste + soldQty;
-                    const percentage = totalOutflow > 0 ? (p.periodWaste / totalOutflow) * 100 : 0;
+            {/* TABLA 2: POR PRODUCTOS */}
+            {mermaViewTab === 'by_product' && (
+              <div className="bg-[#0f172a] rounded-2xl overflow-hidden border border-slate-800 shadow-xl">
+                <div className="p-4 bg-[#1e293b]/50 border-b border-slate-800 flex justify-between items-center">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-white">
+                      Merma Agrupada por Productos
+                    </h3>
+                    <p className="text-[9px] font-bold text-slate-400 uppercase">
+                      Porcentaje sobre merma del período ({totalPeriodMermaUnits % 1 === 0 ? totalPeriodMermaUnits : totalPeriodMermaUnits.toFixed(2)} uni.) y porcentaje sobre salidas totales
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-black px-2.5 py-1 rounded-md bg-orange-500/10 text-orange-400 border border-orange-500/20 uppercase">
+                    {productWasteList.length} Productos
+                  </span>
+                </div>
 
-                    return (
-                      <tr key={i} className="hover:bg-slate-800/50 transition-colors">
-                        <td className="p-4 font-bold">
-                          <div>
-                            <p>{p.name}</p>
-                            <p className="text-[7.5px] text-slate-500 font-bold uppercase mt-0.5">Vendido: {soldQty % 1 === 0 ? soldQty : soldQty.toFixed(1)} uni. en período</p>
-                          </div>
-                        </td>
-                        <td className="p-4 text-right font-black text-rose-400">{p.periodWaste % 1 === 0 ? p.periodWaste : p.periodWaste.toFixed(2)}</td>
-                        <td className="p-4 text-right font-black">
-                          <span className={`text-[11px] ${percentage > 15 ? 'text-rose-500' : percentage > 5 ? 'text-amber-500' : 'text-emerald-500'}`}>
-                            {percentage.toFixed(1)}%
-                          </span>
-                          <span className="block text-[7.5px] text-slate-500 font-medium uppercase tracking-tighter">de {totalOutflow % 1 === 0 ? totalOutflow : totalOutflow.toFixed(1)} salidas</span>
-                        </td>
-                        <td className="p-4 text-right font-black text-slate-400">${valorUSD.toFixed(2)}</td>
-                        <td className="p-4 text-right font-black text-emerald-400">Bs. {valorBS.toLocaleString('es-VE', { minimumFractionDigits: 2 })}</td>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#1e293b] text-slate-400 font-black uppercase tracking-widest text-[9px]">
+                      <tr>
+                        <th className="p-3.5">Producto</th>
+                        <th className="p-3.5 text-center">Cant. Merma</th>
+                        <th className="p-3.5 text-center" title="Porcentaje que este producto representa respecto al total de merma del período">% del Total Merma</th>
+                        <th className="p-3.5 text-center" title="Porcentaje de unidades mermadas respecto a la salida total (Ventas + Merma) de este producto">% Merma / Salidas</th>
+                        <th className="p-3.5 text-right">Valor Est. (USD)</th>
+                        <th className="p-3.5 text-right">Valor Est. (BS)</th>
+                        <th className="p-3.5">Clientes Afectados</th>
                       </tr>
-                    );
-                  })}
-                  {wasteProducts.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="p-8 text-center text-slate-500 font-bold uppercase italic">No hay merma registrada en este periodo</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {productWasteList.map((p, i) => {
+                        const valorUSD = p.totalCostUSD;
+                        const valorBS = calculateBS(valorUSD, 'pending', undefined, settings.exchangeRate);
+                        
+                        const soldQty = movements
+                          .filter(m => m.productId === p.id && m.type === 'sale' && m.date.split('T')[0] >= startDate && m.date.split('T')[0] <= endDate)
+                          .reduce((sum, m) => sum + Math.abs(m.quantity), 0);
+                        
+                        const totalOutflow = p.units + soldQty;
+                        const outflowPercentage = totalOutflow > 0 ? (p.units / totalOutflow) * 100 : 0;
+                        const periodMermaPercentage = totalPeriodMermaUnits > 0 ? (p.units / totalPeriodMermaUnits) * 100 : 0;
+
+                        const clientsArray = Object.entries(p.clientBreakdown);
+
+                        return (
+                          <tr key={i} className="hover:bg-slate-800/40 transition-colors">
+                            <td className="p-3.5 font-bold">
+                              <div>
+                                <p className="text-white uppercase leading-tight">{p.name}</p>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  {p.sku && <span className="text-[7.5px] bg-slate-800 text-slate-400 px-1 py-0.2 rounded font-mono">{p.sku}</span>}
+                                  <span className="text-[7.5px] text-orange-400 uppercase">{p.category}</span>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="p-3.5 text-center font-black text-rose-400 text-sm">
+                              {p.units % 1 === 0 ? p.units : p.units.toFixed(2)}
+                            </td>
+                            <td className="p-3.5 text-center">
+                              <span className={`text-xs font-black ${periodMermaPercentage > 25 ? 'text-rose-500' : 'text-amber-400'}`}>
+                                {periodMermaPercentage.toFixed(1)}%
+                              </span>
+                              <div className="w-14 bg-slate-800 h-1 rounded-full mx-auto mt-1 overflow-hidden">
+                                <div 
+                                  className={`h-full rounded-full ${periodMermaPercentage > 25 ? 'bg-rose-500' : 'bg-amber-400'}`}
+                                  style={{ width: `${Math.min(100, periodMermaPercentage)}%` }}
+                                />
+                              </div>
+                            </td>
+                            <td className="p-3.5 text-center">
+                              <span className={`text-xs font-black ${outflowPercentage > 15 ? 'text-rose-500' : outflowPercentage > 5 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                                {outflowPercentage.toFixed(1)}%
+                              </span>
+                              <span className="block text-[7.5px] text-slate-500 font-medium uppercase tracking-tighter">
+                                de {totalOutflow % 1 === 0 ? totalOutflow : totalOutflow.toFixed(1)} salidas
+                              </span>
+                            </td>
+                            <td className="p-3.5 text-right font-black text-slate-300">${valorUSD.toFixed(2)}</td>
+                            <td className="p-3.5 text-right font-black text-emerald-400">Bs. {valorBS.toLocaleString('es-VE', { minimumFractionDigits: 2 })}</td>
+                            <td className="p-3.5">
+                              <div className="flex flex-wrap gap-1 max-w-[200px]">
+                                {clientsArray.map(([cName, qty], idx) => (
+                                  <span key={idx} className="text-[8px] bg-slate-800/80 text-slate-300 px-1.5 py-0.5 rounded border border-slate-700/50">
+                                    {cName}: <strong className="text-orange-400">{qty % 1 === 0 ? qty : qty.toFixed(1)}</strong>
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+
+                      {productWasteList.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="p-8 text-center text-slate-500 font-bold uppercase italic">
+                            No hay merma de productos registrada en este período.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TABLA 3: HISTORIAL CRONOLÓGICO */}
+            {mermaViewTab === 'movements_log' && (
+              <div className="bg-[#0f172a] rounded-2xl overflow-hidden border border-slate-800 shadow-xl">
+                <div className="p-4 bg-[#1e293b]/50 border-b border-slate-800 flex justify-between items-center">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-white">
+                      Historial Detallado de Registros de Merma
+                    </h3>
+                    <p className="text-[9px] font-bold text-slate-400 uppercase">
+                      Cada movimiento de descuento de unidades del período
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-black px-2.5 py-1 rounded-md bg-rose-500/10 text-rose-400 border border-rose-500/20 uppercase">
+                    {finalFilteredMerma.length} Movimientos
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#1e293b] text-slate-400 font-black uppercase tracking-widest text-[9px]">
+                      <tr>
+                        <th className="p-3.5">Fecha</th>
+                        <th className="p-3.5">Producto</th>
+                        <th className="p-3.5">Cliente / Origen</th>
+                        <th className="p-3.5 text-center">Unidades</th>
+                        <th className="p-3.5 text-right">Costo Estimado</th>
+                        <th className="p-3.5">Motivo / Causa</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {finalFilteredMerma.map((m) => {
+                        const prod = products.find(p => p.id === m.productId);
+                        const cost = prod?.costUSD || 0;
+                        const units = Math.abs(m.quantity);
+                        const costTotal = units * cost;
+
+                        return (
+                          <tr key={m.id} className="hover:bg-slate-800/40 transition-colors">
+                            <td className="p-3.5 whitespace-nowrap text-slate-400 font-mono text-[10px]">
+                              {m.date ? new Date(m.date).toLocaleString('es-VE', { dateStyle: 'short', timeStyle: 'short' }) : 'N/A'}
+                            </td>
+                            <td className="p-3.5 font-bold text-white uppercase">
+                              {m.productName || prod?.name || 'Producto'}
+                            </td>
+                            <td className="p-3.5 font-bold text-orange-400 uppercase">
+                              {m.computedCustomerName}
+                            </td>
+                            <td className="p-3.5 text-center font-black text-rose-400">
+                              -{units % 1 === 0 ? units : units.toFixed(2)}
+                            </td>
+                            <td className="p-3.5 text-right font-black text-slate-300">
+                              ${costTotal.toFixed(2)}
+                            </td>
+                            <td className="p-3.5 text-slate-400 text-[10px]">
+                              {m.reason ? (
+                                <span className="px-2 py-0.5 rounded bg-rose-500/10 text-rose-300 border border-rose-500/20 font-medium">
+                                  {m.reason}
+                                </span>
+                              ) : (
+                                <span className="text-slate-600 italic">Sin motivo especificado</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+
+                      {finalFilteredMerma.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-500 font-bold uppercase italic">
+                            No se encontraron movimientos de merma en el período.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         );
         break;
