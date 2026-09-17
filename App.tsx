@@ -479,7 +479,30 @@ const App: React.FC = () => {
     { id: AppTab.SETTINGS, label: 'AJUSTES', icon: SettingsIcon, roles: ['admin'] },
   ];
 
-  const filteredNavItems = navItems.filter(item => user && item.roles.includes(user.role));
+  const filteredNavItems = useMemo(() => {
+    if (!user) return [];
+    if (user.role === 'admin') return navItems;
+
+    // Si es vendedor y tiene privilegios asignados específicamente por el admin
+    if (user.permissions && user.permissions.length > 0) {
+      return navItems.filter(item => 
+        item.id !== AppTab.SETTINGS && user.permissions!.includes(item.id)
+      );
+    }
+
+    // Por defecto para vendedores sin permisos explícitos
+    return navItems.filter(item => item.roles.includes('seller'));
+  }, [user]);
+
+  // Si la pestaña activa no está permitida para este usuario, redirigir a la primera permitida
+  useEffect(() => {
+    if (user && filteredNavItems.length > 0) {
+      const isCurrentAllowed = filteredNavItems.some(item => item.id === activeTab);
+      if (!isCurrentAllowed) {
+        setActiveTab(filteredNavItems[0].id);
+      }
+    }
+  }, [user, filteredNavItems, activeTab]);
 
   const currentTabLabel = navItems.find(item => item.id === activeTab)?.label || 'GESTIÓN';
 
@@ -675,7 +698,7 @@ const App: React.FC = () => {
           {activeTab === AppTab.CXC && <Accounts type="cxc" items={cxcPendingItems} settings={settings} company={company} onUpdate={loadData} customers={customers} suppliers={suppliers} />}
           {activeTab === AppTab.CXP && <Accounts type="cxp" items={cxpPendingItems} settings={settings} company={company} onUpdate={loadData} customers={customers} suppliers={suppliers} />}
           {activeTab === AppTab.REPORTS && <Reports sales={sales} purchases={purchases} expenses={expenses} products={products} customers={customers} suppliers={suppliers} settings={settings} movements={movements} promotions={promotions} customerPromotions={customerPromotions} />}
-          {activeTab === AppTab.SETTINGS && <Settings company={company} setCompany={setCompany} settings={settings} setSettings={setSettings} user={user} />}
+          {activeTab === AppTab.SETTINGS && <Settings company={company} setCompany={setCompany} settings={settings} setSettings={setSettings} user={user} onCurrentUserUpdated={setUser} />}
         </div>
       </main>
 

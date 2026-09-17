@@ -1,6 +1,10 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { User, Lock, Loader2, UserPlus, LogIn, ShieldCheck, Smartphone, Fingerprint } from 'lucide-react';
+import { 
+  User, Lock, Loader2, UserPlus, LogIn, ShieldCheck, ShieldAlert, Smartphone, 
+  Fingerprint, HelpCircle, KeyRound, CheckCircle2, X, AlertTriangle, 
+  ArrowRight, Users
+} from 'lucide-react';
 import { User as UserType, AppTab } from '../types';
 import { dbService } from '../db';
 import { 
@@ -39,6 +43,92 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     name: '',
     role: 'seller' as 'admin' | 'seller'
   });
+
+  // Estado para Solución de Usuario / Contraseña Olvidada
+  const [showRecoveryModal, setShowRecoveryModal] = useState(false);
+  const [recoveryTab, setRecoveryTab] = useState<'seller' | 'admin'>('seller');
+  const [isResettingAdmin, setIsResettingAdmin] = useState(false);
+  const [recoverySuccessMessage, setRecoverySuccessMessage] = useState('');
+  const [knownUsers, setKnownUsers] = useState<Array<{ username: string; name: string; role: string }>>([]);
+
+  const openRecoveryModal = () => {
+    let localUsers: any[] = [];
+    const saved = localStorage.getItem('local_users');
+    if (saved) {
+      try { localUsers = JSON.parse(saved); } catch { localUsers = []; }
+    }
+    const cleanList = localUsers.map((u: any) => ({
+      username: u.username || '',
+      name: u.name || u.username || '',
+      role: u.role || 'seller'
+    })).filter(u => u.username);
+    setKnownUsers(cleanList);
+    setRecoverySuccessMessage('');
+    setShowRecoveryModal(true);
+  };
+
+  const handleEmergencyAdminReset = async () => {
+    setIsResettingAdmin(true);
+    setRecoverySuccessMessage('');
+    try {
+      // 1. Reset en localStorage
+      let localUsers: any[] = [];
+      const saved = localStorage.getItem('local_users');
+      if (saved) {
+        try { localUsers = JSON.parse(saved); } catch { localUsers = []; }
+      }
+
+      const adminIdx = localUsers.findIndex((u: any) => u.username?.toLowerCase() === 'admin');
+      if (adminIdx >= 0) {
+        localUsers[adminIdx].password = 'admin123';
+        localUsers[adminIdx].role = 'admin';
+        localUsers[adminIdx].permissions = Object.values(AppTab);
+      } else {
+        localUsers.unshift({
+          id: 'admin-local',
+          username: 'admin',
+          password: 'admin123',
+          role: 'admin',
+          name: 'Administrador',
+          permissions: Object.values(AppTab)
+        });
+      }
+      localStorage.setItem('local_users', JSON.stringify(localUsers));
+
+      // 2. Si hay conexión con backend (Termux / SQLite), llamar a /api/auth/reset-admin-emergency
+      try {
+        const baseUrl = dbService.getBaseUrl();
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        await fetch(`${baseUrl}/api/auth/reset-admin-emergency`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newPassword: 'admin123' }),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+      } catch (e) {
+        console.warn("Backend no disponible para reset de emergencia, aplicado en local.");
+      }
+
+      // 3. Auto-rellenar formulario de login
+      setFormData(prev => ({
+        ...prev,
+        username: 'admin',
+        password: 'admin123'
+      }));
+
+      setRecoverySuccessMessage('✅ Administrador restablecido: Usuario: admin | Clave: admin123');
+      setTimeout(() => {
+        setShowRecoveryModal(false);
+        setRecoverySuccessMessage('');
+      }, 3500);
+    } catch (err: any) {
+      alert("Error al restablecer administrador: " + (err.message || 'Intente nuevamente'));
+    } finally {
+      setIsResettingAdmin(false);
+    }
+  };
 
   const handleBiometricAuth = useCallback(async (isAuto = false) => {
     if (isBiometricPrompting) return;
@@ -403,7 +493,16 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         </form>
 
         {isLogin && (
-          <div className="mt-4 text-center">
+          <div className="mt-3 flex flex-col items-center gap-2 text-center">
+            <button
+              type="button"
+              onClick={openRecoveryModal}
+              className="inline-flex items-center gap-1.5 text-[9px] font-bold text-amber-400/90 hover:text-amber-300 uppercase tracking-wider transition-colors py-1 px-3 rounded-lg hover:bg-slate-800"
+            >
+              <HelpCircle size={13} className="text-amber-400" />
+              ¿Olvidaste tu contraseña o usuario?
+            </button>
+
             <button
               type="button"
               onClick={() => {
@@ -427,6 +526,209 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           </button>
         </div>
       </div>
+
+      {/* MODAL: Solución a Usuario o Contraseña Olvidada */}
+      {showRecoveryModal && (
+        <div className="fixed inset-0 z-[2000] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-[#1e293b] border border-slate-700 rounded-[2.5rem] w-full max-w-lg p-6 sm:p-8 shadow-2xl animate-in zoom-in-95 my-8 space-y-5">
+            {/* Encabezado */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-700/80">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-500/10 text-amber-400 rounded-xl">
+                  <KeyRound size={20} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black uppercase tracking-wider text-white">
+                    Recuperación de Acceso
+                  </h3>
+                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                    Solución para usuarios y contraseñas olvidadas
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRecoveryModal(false)}
+                className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Selector de Pestañas: Vendedor vs Administrador */}
+            <div className="grid grid-cols-2 p-1 bg-slate-900 rounded-2xl border border-slate-800">
+              <button
+                type="button"
+                onClick={() => setRecoveryTab('seller')}
+                className={`py-2.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 ${
+                  recoveryTab === 'seller'
+                    ? 'bg-blue-600 text-white shadow-lg'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Users size={14} />
+                <span>Soy Vendedor</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setRecoveryTab('admin')}
+                className={`py-2.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 ${
+                  recoveryTab === 'admin'
+                    ? 'bg-orange-500 text-white shadow-lg'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <ShieldCheck size={14} />
+                <span>Soy Administrador</span>
+              </button>
+            </div>
+
+            {recoverySuccessMessage && (
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-xs font-bold flex items-center gap-2 uppercase tracking-wide">
+                <CheckCircle2 size={16} className="shrink-0" />
+                <span>{recoverySuccessMessage}</span>
+              </div>
+            )}
+
+            {/* Contenido Pestaña: Vendedor */}
+            {recoveryTab === 'seller' && (
+              <div className="space-y-4">
+                <div className="p-4 bg-slate-900/80 rounded-2xl border border-slate-700/80 space-y-2.5">
+                  <div className="flex items-center gap-2 text-amber-400 text-xs font-black uppercase">
+                    <ShieldAlert size={16} />
+                    <span>Control Centralizado de Seguridad</span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Por políticas de seguridad, las cuentas de vendedor y sus privilegios están bajo el control de tu <strong>Administrador</strong>.
+                  </p>
+                  <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800 text-[11px] text-slate-300 space-y-1.5">
+                    <p className="font-bold text-white uppercase text-[9px] tracking-wider">
+                      ¿Cómo restablecer tu contraseña?
+                    </p>
+                    <p>
+                      1. Contacta al Administrador de tu negocio.
+                    </p>
+                    <p>
+                      2. El Administrador ingresará a <strong>Ajustes &gt; Gestión de Usuarios y Privilegios</strong>.
+                    </p>
+                    <p>
+                      3. Presionará el botón <strong>&quot;Contraseña&quot;</strong> junto a tu nombre y te asignará una nueva clave al instante.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Si olvidó el nombre de usuario exacto, listar los usuarios registrados */}
+                <div className="p-4 bg-slate-900/60 rounded-2xl border border-slate-800 space-y-2">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block">
+                    ¿No recuerdas tu nombre de usuario exacto? Usuarios en este equipo:
+                  </span>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {knownUsers.length > 0 ? (
+                      knownUsers.map((u, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => {
+                            setFormData(prev => ({ ...prev, username: u.username }));
+                            setShowRecoveryModal(false);
+                          }}
+                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-left text-[10px] font-bold text-slate-300 hover:text-white transition-all flex items-center gap-1.5 active:scale-95"
+                          title="Haz clic para autocompletar este usuario"
+                        >
+                          <span className="text-orange-400">@{u.username}</span>
+                          <span className="text-[8px] text-slate-500 uppercase">({u.name})</span>
+                          <ArrowRight size={10} className="text-slate-500" />
+                        </button>
+                      ))
+                    ) : (
+                      <span className="text-[10px] text-slate-500 italic">
+                        No hay otros usuarios registrados en este equipo además del admin.
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Contenido Pestaña: Administrador */}
+            {recoveryTab === 'admin' && (
+              <div className="space-y-4">
+                <div className="p-4 bg-slate-900/80 rounded-2xl border border-slate-700/80 space-y-3">
+                  <div className="flex items-center gap-2 text-orange-400 text-xs font-black uppercase">
+                    <ShieldCheck size={16} />
+                    <span>Recuperación de Administrador</span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Si olvidaste la contraseña del Administrador principal o necesitas recuperar el acceso al sistema, dispones de dos mecanismos directos:
+                  </p>
+
+                  <div className="space-y-2">
+                    {/* Opción 1: Huella digital */}
+                    {biometricAvailable && (
+                      <div className="p-3 bg-indigo-500/10 rounded-xl border border-indigo-500/20 flex items-start gap-2.5">
+                        <Fingerprint size={18} className="text-indigo-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-[10px] font-black text-indigo-300 uppercase tracking-wider">
+                            1. Ingreso Biométrico
+                          </p>
+                          <p className="text-[10px] text-slate-400 leading-relaxed">
+                            Si configuraste tu huella digital en este teléfono, puedes cerrar este aviso y presionar el botón <strong>&quot;Ingresar con Huella Digital&quot;</strong>.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Opción 2: Restablecer Administrador de Emergencia */}
+                    <div className="p-3 bg-amber-500/10 rounded-xl border border-amber-500/20 space-y-2">
+                      <div className="flex items-start gap-2.5">
+                        <AlertTriangle size={18} className="text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-[10px] font-black text-amber-300 uppercase tracking-wider">
+                            Restablecer Administrador de Emergencia
+                          </p>
+                          <p className="text-[10px] text-slate-400 leading-relaxed">
+                            Reestablece de forma segura el usuario <strong>admin</strong> con la clave por defecto <strong>admin123</strong> con todos los privilegios.
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleEmergencyAdminReset}
+                        disabled={isResettingAdmin}
+                        className="w-full bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white font-black py-3 rounded-xl text-[10px] uppercase tracking-widest shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+                      >
+                        {isResettingAdmin ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <KeyRound size={16} />
+                        )}
+                        <span>Restablecer Admin a &quot;admin / admin123&quot;</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-[9px] text-slate-500 text-center uppercase tracking-wider">
+                  Una vez que ingreses, recuerda cambiar la contraseña en Ajustes si lo deseas.
+                </p>
+              </div>
+            )}
+
+            {/* Pie del modal */}
+            <div className="pt-2 border-t border-slate-700/80 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowRecoveryModal(false)}
+                className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition-all"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

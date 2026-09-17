@@ -38,6 +38,7 @@ import {
 } from '../biometricHelper';
 import { Capacitor } from '@capacitor/core';
 import { downloadOrShareFile } from '../downloadHelper';
+import { UserManagement } from './UserManagement';
 
 interface Props {
   company: CompanyInfo;
@@ -45,9 +46,10 @@ interface Props {
   settings: AppSettings;
   setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
   user: UserType;
+  onCurrentUserUpdated?: (updatedUser: UserType) => void;
 }
 
-const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings, user }) => {
+const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings, user, onCurrentUserUpdated }) => {
   const [isResetting, setIsResetting] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -561,12 +563,17 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
   };
 
   return (
-    <div className="animate-in fade-in duration-500 pb-12">
+    <div className="animate-in fade-in duration-500 pb-12 space-y-6">
       {isResetting && (
         <div className="fixed inset-0 bg-slate-950/98 backdrop-blur-3xl z-[9999] flex flex-col items-center justify-center text-white text-center">
            <Loader2 size={64} className="text-orange-500 animate-spin mb-6" />
            <h2 className="text-3xl font-black uppercase tracking-[0.4em] mb-4">Limpiando Sistema</h2>
         </div>
+      )}
+
+      {/* Gestión de Usuarios y Privilegios (Solo Administrador) */}
+      {user.role === 'admin' && (
+        <UserManagement currentUser={user} onCurrentUserUpdated={onCurrentUserUpdated} />
       )}
 
       <form onSubmit={saveSettings} className="grid grid-cols-1 lg:grid-cols-2 gap-4">

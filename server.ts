@@ -194,6 +194,33 @@ app.post('/api/auth/change-password', authenticateToken, (req: any, res: any) =>
   });
 });
 
+// Endpoint de emergencia para recuperar / restablecer acceso de administrador
+app.post('/api/auth/reset-admin-emergency', (req: any, res: any) => {
+  const { newPassword } = req.body;
+  const passToSet = newPassword && newPassword.trim().length > 0 ? newPassword.trim() : 'admin123';
+  const hashedPassword = bcrypt.hashSync(passToSet, 10);
+  const allPerms = JSON.stringify(["dashboard","inventory","sales","purchases","customers","suppliers","manufacturing","cxc","cxp","expenses","reports","settings","promotions"]);
+
+  db.get("SELECT id FROM users WHERE username = 'admin'", (err, row: any) => {
+    if (err) return res.status(500).json({ message: err.message });
+    if (row) {
+      db.run("UPDATE users SET password = ?, role = 'admin', permissions = ? WHERE id = ?", [hashedPassword, allPerms, row.id], (uErr) => {
+        if (uErr) return res.status(500).json({ message: uErr.message });
+        console.log(`🔑 Administrador de emergencia restablecido: admin / ${passToSet}`);
+        res.json({ success: true, message: `Usuario 'admin' restablecido exitosamente con clave: ${passToSet}` });
+      });
+    } else {
+      const id = crypto.randomUUID();
+      db.run("INSERT INTO users (id, username, password, role, name, permissions) VALUES (?, ?, ?, ?, ?, ?)",
+        [id, 'admin', hashedPassword, 'admin', 'Administrador', allPerms], (iErr) => {
+          if (iErr) return res.status(500).json({ message: iErr.message });
+          console.log(`🔑 Administrador de emergencia creado: admin / ${passToSet}`);
+          res.json({ success: true, message: `Administrador 'admin' creado exitosamente con clave: ${passToSet}` });
+        });
+    }
+  });
+});
+
 // --- API: RUTAS DE SISTEMA ---
 
 app.post('/api/system/reset', authenticateToken, (req: any, res: any) => {
@@ -344,13 +371,50 @@ app.post('/api/:store', authenticateToken, (req: any, res: any) => {
   
   if (store === 'users') {
     if (req.user.role !== 'admin') return res.status(403).json({ message: 'No autorizado' });
-    // Update user (role/permissions)
-    const { role, permissions, name } = item;
-    db.run("UPDATE users SET role = ?, permissions = ?, name = ? WHERE id = ?", 
-      [role, JSON.stringify(permissions), name, item.id], (err) => {
-        if (err) return res.status(500).json({ message: err.message });
-        res.json({ success: true });
-      });
+    const { id, username, password, role, name, permissions } = item;
+    const permsStr = JSON.stringify(permissions || []);
+    const userRole = role || 'seller';
+    const userName = name || username || 'Usuario';
+
+    // Buscar si ya existe por ID o por username
+    db.get("SELECT * FROM users WHERE id = ? OR username = ?", [id || '', username || ''], (err, existing: any) => {
+      if (err) return res.status(500).json({ message: err.message });
+
+      if (existing) {
+        // Actualizar usuario existente
+        if (password && password.trim().length > 0) {
+          const hashedPassword = bcrypt.hashSync(password.trim(), 10);
+          db.run("UPDATE users SET role = ?, permissions = ?, name = ?, password = ? WHERE id = ?",
+            [userRole, permsStr, userName, hashedPassword, existing.id], (uErr) => {
+              if (uErr) return res.status(500).json({ message: uErr.message });
+              res.json({ success: true, message: 'Usuario y contraseña actualizados correctamente', id: existing.id });
+            });
+        } else {
+          db.run("UPDATE users SET role = ?, permissions = ?, name = ? WHERE id = ?",
+            [userRole, permsStr, userName, existing.id], (uErr) => {
+              if (uErr) return res.status(500).json({ message: uErr.message });
+              res.json({ success: true, message: 'Usuario actualizado correctamente', id: existing.id });
+            });
+        }
+      } else {
+        // Crear nuevo usuario
+        if (!username || !password) {
+          return res.status(400).json({ message: 'Nombre de usuario y contraseña requeridos' });
+        }
+        const hashedPassword = bcrypt.hashSync(password.trim(), 10);
+        const newId = id || crypto.randomUUID();
+        db.run("INSERT INTO users (id, username, password, role, name, permissions) VALUES (?, ?, ?, ?, ?, ?)",
+          [newId, username.trim(), hashedPassword, userRole, userName, permsStr], (iErr) => {
+            if (iErr) {
+              if (iErr.message.includes('UNIQUE constraint failed')) {
+                return res.status(400).json({ message: 'El nombre de usuario ya está registrado' });
+              }
+              return res.status(500).json({ message: iErr.message });
+            }
+            res.json({ success: true, message: 'Usuario creado exitosamente', id: newId });
+          });
+      }
+    });
     return;
   }
 
@@ -366,6 +430,33 @@ app.delete('/api/:store/:id', authenticateToken, (req: any, res: any) => {
   const { store, id } = req.params;
   if (!VALID_STORES.includes(store)) return res.status(404).json({ message: 'Almacén no válido' });
   if (store === 'users' && req.user.role !== 'admin') return res.status(403).json({ message: 'No autorizado' });
+
+  if (store === 'users') {
+    if (req.user.id === id) {
+      return res.status(400).json({ message: 'No puedes eliminar tu propia cuenta de administrador en sesión' });
+    }
+
+    db.get("SELECT COUNT(*) as adminCount FROM users WHERE role = 'admin'", (cntErr, countRow: any) => {
+      if (!cntErr && countRow && countRow.adminCount <= 1) {
+        db.get("SELECT role FROM users WHERE id = ?", [id], (roleErr, userRow: any) => {
+          if (userRow && userRow.role === 'admin') {
+            return res.status(400).json({ message: 'No se puede eliminar el único administrador del sistema' });
+          }
+          db.run(`DELETE FROM users WHERE id = ?`, [id], (delErr) => {
+            if (delErr) return res.status(500).json({ message: delErr.message });
+            res.json({ success: true, message: 'Usuario eliminado correctamente' });
+          });
+        });
+        return;
+      }
+
+      db.run(`DELETE FROM users WHERE id = ?`, [id], (delErr) => {
+        if (delErr) return res.status(500).json({ message: delErr.message });
+        res.json({ success: true, message: 'Usuario eliminado correctamente' });
+      });
+    });
+    return;
+  }
   
   db.run(`DELETE FROM ${store} WHERE id = ?`, [id], (err) => {
     if (err) return res.status(500).json({ message: err.message });

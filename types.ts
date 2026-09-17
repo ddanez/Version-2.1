@@ -236,4 +236,5 @@ export interface User {
   name: string;
   token?: string;
   permissions?: AppTab[];
+  password?: string;
 }
