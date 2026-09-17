@@ -48,6 +48,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
   const [recoveryTab, setRecoveryTab] = useState<'seller' | 'admin'>('seller');
   const [isResettingAdmin, setIsResettingAdmin] = useState(false);
+  const [confirmResetText, setConfirmResetText] = useState('');
   const [recoverySuccessMessage, setRecoverySuccessMessage] = useState('');
   const [knownUsers, setKnownUsers] = useState<Array<{ username: string; name: string; role: string }>>([]);
 
@@ -63,6 +64,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
       role: u.role || 'seller'
     })).filter(u => u.username);
     setKnownUsers(cleanList);
+    setConfirmResetText('');
     setRecoverySuccessMessage('');
     setShowRecoveryModal(true);
   };
@@ -502,18 +504,6 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
               <HelpCircle size={13} className="text-amber-400" />
               ¿Olvidaste tu contraseña o usuario?
             </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setFormData({ username: 'admin', password: 'admin123', name: 'Administrador', role: 'admin' });
-                setTimeout(() => handleLocalAuth(), 50);
-              }}
-              className="inline-flex items-center gap-1.5 text-[9px] font-bold text-slate-400 hover:text-orange-400 uppercase tracking-wider transition-colors py-1 px-3 rounded-lg hover:bg-slate-800"
-            >
-              <Smartphone size={13} className="text-orange-500" />
-              Acceso Rápido Autónomo (admin / admin123)
-            </button>
           </div>
         )}
 
@@ -680,7 +670,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
                     )}
 
                     {/* Opción 2: Restablecer Administrador de Emergencia */}
-                    <div className="p-3 bg-amber-500/10 rounded-xl border border-amber-500/20 space-y-2">
+                    <div className="p-3 bg-amber-500/10 rounded-xl border border-amber-500/20 space-y-3">
                       <div className="flex items-start gap-2.5">
                         <AlertTriangle size={18} className="text-amber-400 shrink-0 mt-0.5" />
                         <div>
@@ -688,16 +678,26 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
                             Restablecer Administrador de Emergencia
                           </p>
                           <p className="text-[10px] text-slate-400 leading-relaxed">
-                            Reestablece de forma segura el usuario <strong>admin</strong> con la clave por defecto <strong>admin123</strong> con todos los privilegios.
+                            Esta acción reestablecerá el usuario <strong>admin</strong> con la clave por defecto <strong>admin123</strong>. Para evitar accesos no autorizados, escribe <strong>CONFIRMAR</strong>:
                           </p>
                         </div>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <input
+                          type="text"
+                          value={confirmResetText}
+                          onChange={(e) => setConfirmResetText(e.target.value)}
+                          placeholder="Escribe CONFIRMAR para habilitar"
+                          className="w-full bg-[#0f172a] border border-slate-700 rounded-xl py-2 px-3 text-xs font-bold text-white uppercase outline-none focus:border-amber-500"
+                        />
                       </div>
 
                       <button
                         type="button"
                         onClick={handleEmergencyAdminReset}
-                        disabled={isResettingAdmin}
-                        className="w-full bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white font-black py-3 rounded-xl text-[10px] uppercase tracking-widest shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+                        disabled={isResettingAdmin || confirmResetText.trim().toUpperCase() !== 'CONFIRMAR'}
+                        className="w-full bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black py-3 rounded-xl text-[10px] uppercase tracking-widest shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
                       >
                         {isResettingAdmin ? (
                           <Loader2 size={16} className="animate-spin" />
