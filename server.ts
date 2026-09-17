@@ -194,33 +194,6 @@ app.post('/api/auth/change-password', authenticateToken, (req: any, res: any) =>
   });
 });
 
-// Endpoint de emergencia para recuperar / restablecer acceso de administrador
-app.post('/api/auth/reset-admin-emergency', (req: any, res: any) => {
-  const { newPassword } = req.body;
-  const passToSet = newPassword && newPassword.trim().length > 0 ? newPassword.trim() : 'admin123';
-  const hashedPassword = bcrypt.hashSync(passToSet, 10);
-  const allPerms = JSON.stringify(["dashboard","inventory","sales","purchases","customers","suppliers","manufacturing","cxc","cxp","expenses","reports","settings","promotions"]);
-
-  db.get("SELECT id FROM users WHERE username = 'admin'", (err, row: any) => {
-    if (err) return res.status(500).json({ message: err.message });
-    if (row) {
-      db.run("UPDATE users SET password = ?, role = 'admin', permissions = ? WHERE id = ?", [hashedPassword, allPerms, row.id], (uErr) => {
-        if (uErr) return res.status(500).json({ message: uErr.message });
-        console.log(`🔑 Administrador de emergencia restablecido: admin / ${passToSet}`);
-        res.json({ success: true, message: `Usuario 'admin' restablecido exitosamente con clave: ${passToSet}` });
-      });
-    } else {
-      const id = crypto.randomUUID();
-      db.run("INSERT INTO users (id, username, password, role, name, permissions) VALUES (?, ?, ?, ?, ?, ?)",
-        [id, 'admin', hashedPassword, 'admin', 'Administrador', allPerms], (iErr) => {
-          if (iErr) return res.status(500).json({ message: iErr.message });
-          console.log(`🔑 Administrador de emergencia creado: admin / ${passToSet}`);
-          res.json({ success: true, message: `Administrador 'admin' creado exitosamente con clave: ${passToSet}` });
-        });
-    }
-  });
-});
-
 // --- API: RUTAS DE SISTEMA ---
 
 app.post('/api/system/reset', authenticateToken, (req: any, res: any) => {

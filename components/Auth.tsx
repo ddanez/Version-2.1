@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
-  User, Lock, Loader2, UserPlus, LogIn, ShieldCheck, ShieldAlert, Smartphone, 
-  Fingerprint, HelpCircle, KeyRound, CheckCircle2, X, AlertTriangle, 
+  User, Lock, Loader2, LogIn, ShieldCheck, ShieldAlert, Smartphone, 
+  Fingerprint, HelpCircle, KeyRound, CheckCircle2, X, Info, 
   ArrowRight, Users
 } from 'lucide-react';
 import { User as UserType, AppTab } from '../types';
@@ -30,7 +30,6 @@ const DEFAULT_ADMIN = {
 };
 
 export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
-  const [isLogin, setIsLogin] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [biometricAvailable, setBiometricAvailable] = useState(false);
@@ -39,17 +38,12 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   
   const [formData, setFormData] = useState({
     username: '',
-    password: '',
-    name: '',
-    role: 'seller' as 'admin' | 'seller'
+    password: ''
   });
 
-  // Estado para Solución de Usuario / Contraseña Olvidada
+  // Estado para Modal de Asistencia y Recuperación de Credenciales
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
   const [recoveryTab, setRecoveryTab] = useState<'seller' | 'admin'>('seller');
-  const [isResettingAdmin, setIsResettingAdmin] = useState(false);
-  const [confirmResetText, setConfirmResetText] = useState('');
-  const [recoverySuccessMessage, setRecoverySuccessMessage] = useState('');
   const [knownUsers, setKnownUsers] = useState<Array<{ username: string; name: string; role: string }>>([]);
 
   const openRecoveryModal = () => {
@@ -64,72 +58,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
       role: u.role || 'seller'
     })).filter(u => u.username);
     setKnownUsers(cleanList);
-    setConfirmResetText('');
-    setRecoverySuccessMessage('');
     setShowRecoveryModal(true);
-  };
-
-  const handleEmergencyAdminReset = async () => {
-    setIsResettingAdmin(true);
-    setRecoverySuccessMessage('');
-    try {
-      // 1. Reset en localStorage
-      let localUsers: any[] = [];
-      const saved = localStorage.getItem('local_users');
-      if (saved) {
-        try { localUsers = JSON.parse(saved); } catch { localUsers = []; }
-      }
-
-      const adminIdx = localUsers.findIndex((u: any) => u.username?.toLowerCase() === 'admin');
-      if (adminIdx >= 0) {
-        localUsers[adminIdx].password = 'admin123';
-        localUsers[adminIdx].role = 'admin';
-        localUsers[adminIdx].permissions = Object.values(AppTab);
-      } else {
-        localUsers.unshift({
-          id: 'admin-local',
-          username: 'admin',
-          password: 'admin123',
-          role: 'admin',
-          name: 'Administrador',
-          permissions: Object.values(AppTab)
-        });
-      }
-      localStorage.setItem('local_users', JSON.stringify(localUsers));
-
-      // 2. Si hay conexión con backend (Termux / SQLite), llamar a /api/auth/reset-admin-emergency
-      try {
-        const baseUrl = dbService.getBaseUrl();
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
-        await fetch(`${baseUrl}/api/auth/reset-admin-emergency`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ newPassword: 'admin123' }),
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-      } catch (e) {
-        console.warn("Backend no disponible para reset de emergencia, aplicado en local.");
-      }
-
-      // 3. Auto-rellenar formulario de login
-      setFormData(prev => ({
-        ...prev,
-        username: 'admin',
-        password: 'admin123'
-      }));
-
-      setRecoverySuccessMessage('✅ Administrador restablecido: Usuario: admin | Clave: admin123');
-      setTimeout(() => {
-        setShowRecoveryModal(false);
-        setRecoverySuccessMessage('');
-      }, 3500);
-    } catch (err: any) {
-      alert("Error al restablecer administrador: " + (err.message || 'Intente nuevamente'));
-    } finally {
-      setIsResettingAdmin(false);
-    }
   };
 
   const handleBiometricAuth = useCallback(async (isAuto = false) => {
@@ -253,49 +182,21 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         localStorage.setItem('local_users', JSON.stringify(localUsers));
       }
 
-      if (isLogin) {
-        const matched = localUsers.find(
-          u => u.username.toLowerCase() === formData.username.trim().toLowerCase() && u.password === formData.password
-        );
+      const matched = localUsers.find(
+        u => u.username.toLowerCase() === formData.username.trim().toLowerCase() && u.password === formData.password
+      );
 
-        if (matched) {
-          const { password, ...safeUser } = matched;
-          const userWithToken: UserType = { ...safeUser, token: 'local-offline-token' };
-          localStorage.setItem('auth_token', 'local-offline-token');
-          localStorage.setItem('user_data', JSON.stringify(safeUser));
-          dbService.setToken('local-offline-token');
-          onLogin(userWithToken);
-          return true;
-        } else {
-          setError('Credenciales incorrectas (Modo local. Admin por defecto: admin / admin123)');
-          return false;
-        }
-      } else {
-        // Registro local
-        const exists = localUsers.some(
-          u => u.username.toLowerCase() === formData.username.trim().toLowerCase()
-        );
-        if (exists) {
-          setError('El nombre de usuario ya está registrado en este dispositivo');
-          return false;
-        }
-
-        const newUser = {
-          id: crypto.randomUUID(),
-          username: formData.username.trim(),
-          password: formData.password,
-          role: formData.role,
-          name: formData.name || formData.username,
-          permissions: formData.role === 'admin'
-            ? ["dashboard","inventory","sales","purchases","customers","suppliers","manufacturing","cxc","cxp","expenses","reports","settings"]
-            : ["inventory","sales","customers"]
-        };
-
-        localUsers.push(newUser);
-        localStorage.setItem('local_users', JSON.stringify(localUsers));
-        alert('Usuario registrado exitosamente en el dispositivo. Ahora puedes iniciar sesión.');
-        setIsLogin(true);
+      if (matched) {
+        const { password, ...safeUser } = matched;
+        const userWithToken: UserType = { ...safeUser, token: 'local-offline-token' };
+        localStorage.setItem('auth_token', 'local-offline-token');
+        localStorage.setItem('user_data', JSON.stringify(safeUser));
+        dbService.setToken('local-offline-token');
+        onLogin(userWithToken);
         return true;
+      } else {
+        setError('Credenciales incorrectas');
+        return false;
       }
     } catch (e: any) {
       setError(e.message || 'Error en autenticación local');
@@ -308,7 +209,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     setIsLoading(true);
     setError('');
 
-    const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
+    const endpoint = '/api/auth/login';
     
     // Timeout corto de 2.5s para no hacer esperar al usuario si está en modo APK offline
     const controller = new AbortController();
@@ -331,28 +232,23 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           throw new Error(data.message || 'Error en la autenticación');
         }
 
-        if (isLogin) {
-          const userWithToken = { ...data.user, token: data.token };
-          localStorage.setItem('auth_token', data.token);
-          localStorage.setItem('user_data', JSON.stringify(data.user));
-          
-          // Guardar también una copia local para acceso offline futuro
-          try {
-            const saved = localStorage.getItem('local_users');
-            let localUsers = saved ? JSON.parse(saved) : [];
-            const idx = localUsers.findIndex((u: any) => u.username === data.user.username);
-            const toSave = { ...data.user, password: formData.password };
-            if (idx >= 0) localUsers[idx] = toSave;
-            else localUsers.push(toSave);
-            localStorage.setItem('local_users', JSON.stringify(localUsers));
-          } catch (e) {}
+        const userWithToken = { ...data.user, token: data.token };
+        localStorage.setItem('auth_token', data.token);
+        localStorage.setItem('user_data', JSON.stringify(data.user));
+        
+        // Guardar también una copia local para acceso offline futuro
+        try {
+          const saved = localStorage.getItem('local_users');
+          let localUsers = saved ? JSON.parse(saved) : [];
+          const idx = localUsers.findIndex((u: any) => u.username === data.user.username);
+          const toSave = { ...data.user, password: formData.password };
+          if (idx >= 0) localUsers[idx] = toSave;
+          else localUsers.push(toSave);
+          localStorage.setItem('local_users', JSON.stringify(localUsers));
+        } catch (e) {}
 
-          dbService.setToken(data.token);
-          onLogin(userWithToken);
-        } else {
-          alert('Registro exitoso. Ahora puedes iniciar sesión.');
-          setIsLogin(true);
-        }
+        dbService.setToken(data.token);
+        onLogin(userWithToken);
       } else {
         // Respuesta no válida del servidor, intentar localmente
         handleLocalAuth();
@@ -375,40 +271,38 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           </div>
           <h1 className="text-2xl font-black text-white uppercase tracking-tighter">GestorPro Auth</h1>
           <p className="text-slate-500 text-[10px] font-bold uppercase tracking-widest mt-1">
-            {isLogin ? 'Inicia sesión para continuar' : 'Crea una nueva cuenta'}
+            Inicia sesión para continuar
           </p>
         </div>
 
-        {isLogin && (
-          <div className="mb-6 space-y-3">
-            <button
-              type="button"
-              onClick={() => handleBiometricAuth(false)}
-              disabled={isBiometricPrompting}
-              className="w-full relative overflow-hidden group bg-gradient-to-r from-orange-500 via-amber-500 to-orange-600 hover:from-orange-600 hover:to-amber-600 text-white font-black py-4 px-4 rounded-2xl shadow-xl shadow-orange-500/25 flex items-center justify-center gap-3.5 transition-all active:scale-[0.98] border border-orange-400/40 touch-manipulation"
-            >
-              <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center backdrop-blur-sm shadow-inner shrink-0">
-                <Fingerprint size={24} className={`text-white ${isBiometricPrompting ? 'animate-bounce' : 'group-hover:scale-110 transition-transform'}`} />
-              </div>
-              <div className="text-left flex-1 min-w-0">
-                <div className="text-xs font-black uppercase tracking-wider text-white flex items-center gap-1.5">
-                  {isBiometricPrompting ? 'Sensor Activo...' : 'Ingresar con Huella Digital'}
-                </div>
-                <div className="text-[10px] text-white/90 font-semibold normal-case truncate">
-                  {isBiometricPrompting ? 'Toca el sensor de tu teléfono' : 'Acceso instantáneo con tu sensor'}
-                </div>
-              </div>
-            </button>
-
-            <div className="relative flex items-center justify-center pt-1">
-              <div className="border-t border-slate-700/80 w-full"></div>
-              <span className="bg-[#1e293b] px-3 text-[8px] font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">
-                o ingresa con tu contraseña
-              </span>
-              <div className="border-t border-slate-700/80 w-full"></div>
+        <div className="mb-6 space-y-3">
+          <button
+            type="button"
+            onClick={() => handleBiometricAuth(false)}
+            disabled={isBiometricPrompting}
+            className="w-full relative overflow-hidden group bg-gradient-to-r from-orange-500 via-amber-500 to-orange-600 hover:from-orange-600 hover:to-amber-600 text-white font-black py-4 px-4 rounded-2xl shadow-xl shadow-orange-500/25 flex items-center justify-center gap-3.5 transition-all active:scale-[0.98] border border-orange-400/40 touch-manipulation"
+          >
+            <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center backdrop-blur-sm shadow-inner shrink-0">
+              <Fingerprint size={24} className={`text-white ${isBiometricPrompting ? 'animate-bounce' : 'group-hover:scale-110 transition-transform'}`} />
             </div>
+            <div className="text-left flex-1 min-w-0">
+              <div className="text-xs font-black uppercase tracking-wider text-white flex items-center gap-1.5">
+                {isBiometricPrompting ? 'Sensor Activo...' : 'Ingresar con Huella Digital'}
+              </div>
+              <div className="text-[10px] text-white/90 font-semibold normal-case truncate">
+                {isBiometricPrompting ? 'Toca el sensor de tu teléfono' : 'Acceso instantáneo con tu sensor'}
+              </div>
+            </div>
+          </button>
+
+          <div className="relative flex items-center justify-center pt-1">
+            <div className="border-t border-slate-700/80 w-full"></div>
+            <span className="bg-[#1e293b] px-3 text-[8px] font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">
+              o ingresa con tu contraseña
+            </span>
+            <div className="border-t border-slate-700/80 w-full"></div>
           </div>
-        )}
+        </div>
 
         {error && (
           <div className="bg-rose-500/10 border border-rose-500/20 text-rose-500 text-[10px] font-bold p-3 rounded-xl mb-6 text-center uppercase tracking-wider">
@@ -417,37 +311,6 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {!isLogin && (
-            <>
-              <div className="space-y-1">
-                <label className="text-[9px] font-black text-slate-500 uppercase ml-2">Nombre Completo</label>
-                <div className="relative">
-                  <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
-                  <input 
-                    type="text" 
-                    required 
-                    className="w-full bg-[#0f172a] border border-slate-700 rounded-xl py-3 pl-12 pr-4 text-xs font-bold text-white outline-none focus:border-orange-500/50 transition-all"
-                    placeholder="Ej. Juan Pérez"
-                    value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[9px] font-black text-slate-500 uppercase ml-2">Rol de Usuario</label>
-                <select 
-                  className="w-full bg-[#0f172a] border border-slate-700 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-orange-500/50 transition-all"
-                  value={formData.role}
-                  onChange={(e) => setFormData({ ...formData, role: e.target.value as 'admin' | 'seller' })}
-                >
-                  <option value="seller">Vendedor</option>
-                  <option value="admin">Administrador</option>
-                </select>
-              </div>
-            </>
-          )}
-
           <div className="space-y-1">
             <label className="text-[9px] font-black text-slate-500 uppercase ml-2">Usuario</label>
             <div className="relative">
@@ -487,32 +350,21 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
               <Loader2 size={18} className="animate-spin" />
             ) : (
               <>
-                {isLogin ? <LogIn size={18} /> : <UserPlus size={18} />}
-                {isLogin ? 'Iniciar Sesión' : 'Registrar Cuenta'}
+                <LogIn size={18} />
+                <span>Iniciar Sesión</span>
               </>
             )}
           </button>
         </form>
 
-        {isLogin && (
-          <div className="mt-3 flex flex-col items-center gap-2 text-center">
-            <button
-              type="button"
-              onClick={openRecoveryModal}
-              className="inline-flex items-center gap-1.5 text-[9px] font-bold text-amber-400/90 hover:text-amber-300 uppercase tracking-wider transition-colors py-1 px-3 rounded-lg hover:bg-slate-800"
-            >
-              <HelpCircle size={13} className="text-amber-400" />
-              ¿Olvidaste tu contraseña o usuario?
-            </button>
-          </div>
-        )}
-
-        <div className="mt-6 pt-6 border-t border-slate-700/50 text-center">
-          <button 
-            onClick={() => setIsLogin(!isLogin)}
-            className="text-[9px] font-black text-slate-500 hover:text-orange-500 uppercase tracking-widest transition-colors"
+        <div className="mt-4 flex flex-col items-center gap-2 text-center">
+          <button
+            type="button"
+            onClick={openRecoveryModal}
+            className="inline-flex items-center gap-1.5 text-[9px] font-bold text-amber-400/90 hover:text-amber-300 uppercase tracking-wider transition-colors py-1 px-3 rounded-lg hover:bg-slate-800"
           >
-            {isLogin ? '¿No tienes cuenta? Regístrate' : '¿Ya tienes cuenta? Inicia sesión'}
+            <HelpCircle size={13} className="text-amber-400" />
+            ¿Olvidaste tu contraseña o usuario?
           </button>
         </div>
       </div>
@@ -573,13 +425,6 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
                 <span>Soy Administrador</span>
               </button>
             </div>
-
-            {recoverySuccessMessage && (
-              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-xs font-bold flex items-center gap-2 uppercase tracking-wide">
-                <CheckCircle2 size={16} className="shrink-0" />
-                <span>{recoverySuccessMessage}</span>
-              </div>
-            )}
 
             {/* Contenido Pestaña: Vendedor */}
             {recoveryTab === 'seller' && (
@@ -650,69 +495,42 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
                     <span>Recuperación de Administrador</span>
                   </div>
                   <p className="text-xs text-slate-300 leading-relaxed">
-                    Si olvidaste la contraseña del Administrador principal o necesitas recuperar el acceso al sistema, dispones de dos mecanismos directos:
+                    Si olvidaste la contraseña del Administrador principal, consulta las siguientes opciones de acceso autorizadas:
                   </p>
 
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {/* Opción 1: Huella digital */}
                     {biometricAvailable && (
-                      <div className="p-3 bg-indigo-500/10 rounded-xl border border-indigo-500/20 flex items-start gap-2.5">
-                        <Fingerprint size={18} className="text-indigo-400 shrink-0 mt-0.5" />
+                      <div className="p-3.5 bg-indigo-500/10 rounded-xl border border-indigo-500/20 flex items-start gap-3">
+                        <Fingerprint size={20} className="text-indigo-400 shrink-0 mt-0.5" />
                         <div>
-                          <p className="text-[10px] font-black text-indigo-300 uppercase tracking-wider">
-                            1. Ingreso Biométrico
+                          <p className="text-[11px] font-black text-indigo-300 uppercase tracking-wider">
+                            Ingreso Biométrico (Huella Digital)
                           </p>
-                          <p className="text-[10px] text-slate-400 leading-relaxed">
-                            Si configuraste tu huella digital en este teléfono, puedes cerrar este aviso y presionar el botón <strong>&quot;Ingresar con Huella Digital&quot;</strong>.
+                          <p className="text-[10px] text-slate-300 leading-relaxed mt-0.5">
+                            Si vinculaste tu huella dactilar para el Administrador en este dispositivo, cierra este diálogo y presiona el botón principal <strong>&quot;Ingresar con Huella Digital&quot;</strong>.
                           </p>
                         </div>
                       </div>
                     )}
 
-                    {/* Opción 2: Restablecer Administrador de Emergencia */}
-                    <div className="p-3 bg-amber-500/10 rounded-xl border border-amber-500/20 space-y-3">
-                      <div className="flex items-start gap-2.5">
-                        <AlertTriangle size={18} className="text-amber-400 shrink-0 mt-0.5" />
-                        <div>
-                          <p className="text-[10px] font-black text-amber-300 uppercase tracking-wider">
-                            Restablecer Administrador de Emergencia
-                          </p>
-                          <p className="text-[10px] text-slate-400 leading-relaxed">
-                            Esta acción reestablecerá el usuario <strong>admin</strong> con la clave por defecto <strong>admin123</strong>. Para evitar accesos no autorizados, escribe <strong>CONFIRMAR</strong>:
-                          </p>
-                        </div>
+                    {/* Aviso de Seguridad: No permitido restablecimiento público */}
+                    <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700 flex items-start gap-3">
+                      <ShieldAlert size={20} className="text-amber-400 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-black text-amber-300 uppercase tracking-wider">
+                          Protocolo de Seguridad Activo
+                        </p>
+                        <p className="text-[10px] text-slate-400 leading-relaxed">
+                          Por estrictas políticas de protección de datos, la cuenta de Administrador no puede restablecerse públicamente desde esta pantalla sin autorización previa.
+                        </p>
+                        <p className="text-[10px] text-slate-400 leading-relaxed">
+                          Si no recuerdas la contraseña y no dispones de huella dactilar, contacta directamente con el soporte técnico o restaura tu base de datos desde una copia de respaldo segura.
+                        </p>
                       </div>
-
-                      <div className="space-y-1.5">
-                        <input
-                          type="text"
-                          value={confirmResetText}
-                          onChange={(e) => setConfirmResetText(e.target.value)}
-                          placeholder="Escribe CONFIRMAR para habilitar"
-                          className="w-full bg-[#0f172a] border border-slate-700 rounded-xl py-2 px-3 text-xs font-bold text-white uppercase outline-none focus:border-amber-500"
-                        />
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={handleEmergencyAdminReset}
-                        disabled={isResettingAdmin || confirmResetText.trim().toUpperCase() !== 'CONFIRMAR'}
-                        className="w-full bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black py-3 rounded-xl text-[10px] uppercase tracking-widest shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
-                      >
-                        {isResettingAdmin ? (
-                          <Loader2 size={16} className="animate-spin" />
-                        ) : (
-                          <KeyRound size={16} />
-                        )}
-                        <span>Restablecer Admin a &quot;admin / admin123&quot;</span>
-                      </button>
                     </div>
                   </div>
                 </div>
-
-                <p className="text-[9px] text-slate-500 text-center uppercase tracking-wider">
-                  Una vez que ingreses, recuerda cambiar la contraseña en Ajustes si lo deseas.
-                </p>
               </div>
             )}
 
