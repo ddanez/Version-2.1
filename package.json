@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "start": "tsx server.ts",
     "cap:sync": "npm run build && cap sync",
-    "cap:open": "cap open android"
+    "cap:open": "cap open android",
+    "generate:icons": "node scripts/generate-icons.js"
   },
   "dependencies": {
     "@aparajita/capacitor-biometric-auth": "^10.0.0",

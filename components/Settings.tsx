@@ -21,8 +21,11 @@ import {
   Cloud,
   Sparkles,
   Brain,
-  Key
+  Key,
+  RefreshCw,
+  CheckCircle2
 } from 'lucide-react';
+import { fetchBcvRate } from '../services/bcvService';
 import { CompanyInfo, AppSettings, User as UserType } from '../types';
 import { dbService } from '../db';
 
@@ -70,6 +73,45 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
   });
 
   const [isExportingDoc, setIsExportingDoc] = useState<string | null>(null);
+  const [exchangeRateValue, setExchangeRateValue] = useState<string>(settings.exchangeRate > 0 ? settings.exchangeRate.toString() : '');
+  const [autoUpdateRate, setAutoUpdateRate] = useState<boolean>(settings.autoUpdateExchangeRate !== false);
+  const [isFetchingBcv, setIsFetchingBcv] = useState(false);
+  const [bcvFeedback, setBcvFeedback] = useState<{ message: string; isError?: boolean } | null>(null);
+
+  const handleQueryBcvNow = async () => {
+    setIsFetchingBcv(true);
+    setBcvFeedback(null);
+    try {
+      const res = await fetchBcvRate();
+      if (res.success && res.rate > 0) {
+        setExchangeRateValue(res.rate.toString());
+        const updated = {
+          ...settings,
+          exchangeRate: res.rate,
+          lastRateUpdate: res.date,
+          exchangeRateSource: res.source
+        };
+        setSettings(updated);
+        await dbService.put('settings', { ...updated, id: 'app_settings' });
+        setBcvFeedback({
+          message: `Tasa BCV oficial aplicada: ${res.rate.toFixed(2)} Bs/$ (${res.date})`,
+          isError: false
+        });
+      } else {
+        setBcvFeedback({
+          message: res.error || 'No se pudo consultar el BCV.',
+          isError: true
+        });
+      }
+    } catch (e: any) {
+      setBcvFeedback({
+        message: 'Error al conectar con el servicio oficial.',
+        isError: true
+      });
+    } finally {
+      setIsFetchingBcv(false);
+    }
+  };
 
   const downloadPDF = async (title: string, content: string, filename: string) => {
     try {
@@ -264,7 +306,8 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
     // Guardar tasa de cambio y llave de Gemini
     const newSettings: AppSettings = {
       ...settings,
-      exchangeRate: parseNumber(formData.get('exchangeRate') as string) || settings.exchangeRate,
+      exchangeRate: parseNumber(exchangeRateValue) || settings.exchangeRate,
+      autoUpdateExchangeRate: autoUpdateRate,
       aiProvider: formData.get('aiProvider') as 'gemini' | 'deepseek' | 'openai',
       geminiApiKey: formData.get('geminiApiKey') as string,
       geminiModel: formData.get('geminiModel') as string,
@@ -659,20 +702,66 @@ const Settings: React.FC<Props> = ({ company, setCompany, settings, setSettings,
                  </label>
               </div>
               
-              {/* Configuración de Moneda integrada en el panel lateral */}
-              <div className="w-full space-y-1 text-left px-2">
-                 <label className="text-[8px] font-black text-slate-500 uppercase ml-2">Tasa de Cambio Manual (Bs/$)</label>
+              {/* Configuración de Moneda y Tasa Oficial BCV */}
+              <div className="w-full space-y-3 text-left px-2">
+                 <div className="flex items-center justify-between">
+                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Tasa de Cambio (Bs/$)</label>
+                   {settings.lastRateUpdate && (
+                     <span className="text-[8px] font-bold text-slate-500 uppercase">
+                       {settings.lastRateUpdate}
+                     </span>
+                   )}
+                 </div>
+
                  <div className="relative">
                    <input 
                      name="exchangeRate" 
                      type="number" 
                      step="0.01" 
                      lang="en-US"
-                     defaultValue={settings.exchangeRate} 
+                     value={exchangeRateValue}
+                     onChange={(e) => setExchangeRateValue(e.target.value)}
+                     placeholder="0.00"
                      className="w-full bg-[#0f172a] border border-slate-700 rounded-2xl p-4 text-2xl font-black text-orange-500 outline-none focus:border-orange-500/50" 
                    />
                    <TrendingUp className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-700" size={20} />
                  </div>
+
+                 {/* Botón Consultar Tasa Oficial BCV */}
+                 <button
+                   type="button"
+                   onClick={handleQueryBcvNow}
+                   disabled={isFetchingBcv}
+                   className="w-full bg-slate-800 hover:bg-slate-700 border border-emerald-500/30 text-emerald-400 font-black py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 text-[10px] uppercase tracking-wider transition-all active:scale-95"
+                 >
+                   <RefreshCw size={14} className={isFetchingBcv ? 'animate-spin text-emerald-400' : 'text-emerald-400'} />
+                   <span>{isFetchingBcv ? 'Consultando BCV...' : 'Consultar Tasa Oficial BCV'}</span>
+                 </button>
+
+                 {bcvFeedback && (
+                   <div className={`p-2.5 rounded-xl text-[10px] font-bold flex items-center gap-2 ${bcvFeedback.isError ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20'}`}>
+                     {bcvFeedback.isError ? <AlertTriangle size={14} className="shrink-0" /> : <CheckCircle2 size={14} className="shrink-0" />}
+                     <span>{bcvFeedback.message}</span>
+                   </div>
+                 )}
+
+                 {/* Opción de actualización automática */}
+                 <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-900/60 border border-slate-800 cursor-pointer">
+                   <input
+                     type="checkbox"
+                     checked={autoUpdateRate}
+                     onChange={(e) => setAutoUpdateRate(e.target.checked)}
+                     className="mt-0.5 rounded text-orange-500 focus:ring-orange-500 bg-slate-800 border-slate-700 w-4 h-4"
+                   />
+                   <div className="space-y-0.5">
+                     <p className="text-[10px] font-black text-slate-300 uppercase tracking-tight">
+                       Actualizar tasa automáticamente con BCV
+                     </p>
+                     <p className="text-[9px] text-slate-500 leading-tight">
+                       Al abrir la app cada día, consulta y aplica la tasa oficial del BCV sin requerir ingreso manual.
+                     </p>
+                   </div>
+                 </label>
               </div>
 
               <button type="submit" className="w-full bg-orange-500 hover:bg-orange-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-3 shadow-xl transition-all text-xs uppercase tracking-widest mt-2">

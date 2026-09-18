@@ -32,6 +32,7 @@ import Reports from './components/Reports';
 import Settings from './components/Settings';
 import Splash from './components/Splash';
 import ExchangeRateModal from './components/ExchangeRateModal';
+import { fetchBcvRate } from './services/bcvService';
 import Auth from './components/Auth';
 import Manufacturing from './components/Manufacturing';
 import Promotions from './components/Promotions';
@@ -309,8 +310,32 @@ const App: React.FC = () => {
       if (savedCompany) setCompany(savedCompany);
 
       const today = new Date().toISOString().split('T')[0];
+      const shouldAutoUpdate = !savedSettings || savedSettings.autoUpdateExchangeRate !== false;
+      
       if (!savedSettings || savedSettings.lastRateUpdate !== today) {
-        setShowExchangeModal(true);
+        if (shouldAutoUpdate) {
+          fetchBcvRate().then(async (bcvRes) => {
+            if (bcvRes.success && bcvRes.rate > 0) {
+              const currentSt = savedSettings || { ...settings };
+              const updated = {
+                ...currentSt,
+                exchangeRate: bcvRes.rate,
+                lastRateUpdate: today,
+                exchangeRateSource: bcvRes.source
+              };
+              setSettings(updated);
+              await dbService.put('settings', { ...updated, id: 'app_settings' });
+              setExitNotice(`⚡ Tasa BCV actualizada: ${bcvRes.rate.toFixed(2)} Bs/$`);
+              setTimeout(() => setExitNotice(null), 5000);
+            } else {
+              setShowExchangeModal(true);
+            }
+          }).catch(() => {
+            setShowExchangeModal(true);
+          });
+        } else {
+          setShowExchangeModal(true);
+        }
       }
     } catch (err) {
       console.error("Error al cargar datos:", err);
@@ -452,11 +477,12 @@ const App: React.FC = () => {
     }
   };
 
-  const handleUpdateExchangeRate = async (rate: number) => {
+  const handleUpdateExchangeRate = async (rate: number, source?: string) => {
     const newSettings = { 
       ...settings, 
       exchangeRate: rate, 
-      lastRateUpdate: new Date().toISOString().split('T')[0] 
+      lastRateUpdate: new Date().toISOString().split('T')[0],
+      exchangeRateSource: source || 'Manual'
     };
     setSettings(newSettings);
     await dbService.put('settings', { ...newSettings, id: 'app_settings' });
@@ -702,7 +728,13 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      {showExchangeModal && <ExchangeRateModal onSave={handleUpdateExchangeRate} currentRate={settings.exchangeRate} />}
+      {showExchangeModal && (
+        <ExchangeRateModal 
+          onSave={handleUpdateExchangeRate} 
+          currentRate={settings.exchangeRate} 
+          onClose={() => setShowExchangeModal(false)}
+        />
+      )}
 
       {exitNotice && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[300] bg-slate-900/95 text-slate-200 border border-orange-500/50 px-5 py-3.5 rounded-2xl shadow-2xl flex items-center gap-2.5 text-xs font-black animate-in fade-in slide-in-from-bottom-3 duration-200 backdrop-blur-md max-w-sm text-center tracking-tight uppercase">

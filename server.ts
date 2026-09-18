@@ -194,6 +194,65 @@ app.post('/api/auth/change-password', authenticateToken, (req: any, res: any) =>
   });
 });
 
+// --- API: COTIZACIÓN AUTOMÁTICA BCV ---
+let cachedBcvRate: { rate: number; date: string; timestamp: number } | null = null;
+
+app.get('/api/exchange-rate/bcv', async (req: any, res: any) => {
+  const now = Date.now();
+  if (cachedBcvRate && (now - cachedBcvRate.timestamp < 10 * 60 * 1000)) {
+    return res.json({
+      success: true,
+      rate: cachedBcvRate.rate,
+      date: cachedBcvRate.date,
+      source: 'BCV Oficial (Caché)',
+      cached: true
+    });
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    const response = await fetch('https://ve.dolarapi.com/v1/dolares/oficial', {
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' }
+    });
+    clearTimeout(timeout);
+
+    if (response.ok) {
+      const data: any = await response.json();
+      const rateVal = parseFloat(data.promedio);
+      if (!isNaN(rateVal) && rateVal > 0) {
+        cachedBcvRate = {
+          rate: Number(rateVal.toFixed(2)),
+          date: data.fechaActualizacion || new Date().toISOString().split('T')[0],
+          timestamp: now
+        };
+        return res.json({
+          success: true,
+          rate: cachedBcvRate.rate,
+          date: cachedBcvRate.date,
+          source: 'BCV Oficial (ve.dolarapi.com)'
+        });
+      }
+    }
+    throw new Error('Respuesta inválida de servicio oficial');
+  } catch (err: any) {
+    if (cachedBcvRate) {
+      return res.json({
+        success: true,
+        rate: cachedBcvRate.rate,
+        date: cachedBcvRate.date,
+        source: 'BCV Oficial (Último conocido)',
+        stale: true
+      });
+    }
+    res.status(502).json({
+      success: false,
+      message: 'No se pudo obtener la tasa BCV automáticamente: ' + err.message
+    });
+  }
+});
+
 // --- API: RUTAS DE SISTEMA ---
 
 app.post('/api/system/reset', authenticateToken, (req: any, res: any) => {

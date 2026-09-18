@@ -33,6 +33,8 @@ export interface CompanyInfo {
 export interface AppSettings {
   exchangeRate: number;
   lastRateUpdate: string;
+  autoUpdateExchangeRate?: boolean;
+  exchangeRateSource?: string;
   darkMode: boolean;
   showLogoOnTicket: boolean;
   showIvaOnTicket: boolean;

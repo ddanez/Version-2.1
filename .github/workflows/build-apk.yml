@@ -40,6 +40,11 @@ jobs:
           fi
           npx cap sync android
 
+      - name: Generar iconos y recursos con logo D'Danez
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y imagemagick
+          node scripts/generate-icons.js
+
       - name: Dar permisos a Gradlew
         run: |
           cd android
